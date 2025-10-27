@@ -1,190 +1,132 @@
 """
-CrowdVision Backend API for HazeRadar
-Clean, simple, and working version
+PROPER CrowdVision Backend - Working Version
 """
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from supabase import create_client
 import os
-from datetime import datetime
-import cv2
+import logging
 import numpy as np
 from PIL import Image
 import io
-import base64
-from supabase import create_client, Client
-import logging
 
-# Setup logging
+# =========================
+# Logging Configuration
+# =========================
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CrowdVision")
 
+# =========================
+# Flask App Setup
+# =========================
 app = Flask(__name__)
 CORS(app)
 
+# =========================
 # Supabase Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://daxrnmvkpikjvvzgrhko.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRheHJubXZrcGlranZ2emdyaGtvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2OTkyNjEsImV4cCI6MjA3NjI3NTI2MX0.XWJ_aWUh5Eci5tQSRAATqDXmQ5nh2eHQGzYu6qMcsvQ")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# =========================
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Configuration
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+if not SUPABASE_URL or not SUPABASE_KEY:
+    logger.warning("Supabase credentials not found in environment variables.")
 
-def get_health_advice(haze_level):
-    advice_map = {
-        "Good": "Great air quality! Perfect for outdoor activities.",
-        "Moderate": "Air quality is acceptable. Sensitive people should reduce outdoor activity.",
-        "Unhealthy for Sensitive Groups": "Sensitive groups may experience effects. Limit outdoor time.",
-        "Unhealthy": "Everyone may feel effects. Avoid prolonged outdoor activity.",
-        "Very Unhealthy": "Health alert! Avoid outdoor activity.",
-        "Hazardous": "Emergency conditions! Stay indoors."
-    }
-    return advice_map.get(haze_level, "Check local air quality advisories.")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def validate_coordinates(lat, lng):
-    return -90 <= lat <= 90 and -180 <= lng <= 180
-
-def analyze_haze_improved(image_data):
-    """
-    Simple but effective haze detection
-    """
+# =========================
+# Helper Functions
+# =========================
+def analyze_image_simple(image_data):
+    """Enhanced haze analysis using PIL and brightness/contrast detection"""
     try:
         img = Image.open(io.BytesIO(image_data))
         img_array = np.array(img)
         
-        if len(img_array.shape) == 2:  # Grayscale
-            img_rgb = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+        # Convert to grayscale if needed
+        if len(img_array.shape) == 3:
+            gray = np.mean(img_array, axis=2)
         else:
-            img_rgb = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        
-        img_rgb = cv2.resize(img_rgb, (640, 480))
-        hsv = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2HSV)
-        
-        # Look for blue sky regions
-        lower_blue = np.array([100, 40, 40])
-        upper_blue = np.array([140, 255, 255])
-        sky_mask = cv2.inRange(hsv, lower_blue, upper_blue)
-        
-        # Calculate sky percentage
-        sky_percentage = np.sum(sky_mask > 0) / sky_mask.size
-        
-        if sky_percentage > 0.3:  # Decent sky area found
-            sky_pixels = cv2.bitwise_and(hsv, hsv, mask=sky_mask)
-            non_zero_mask = sky_mask > 0
-            avg_saturation = np.mean(sky_pixels[:, :, 1][non_zero_mask])
-            avg_brightness = np.mean(sky_pixels[:, :, 2][non_zero_mask])
+            gray = img_array
             
-            # Determine haze level based on sky color
-            if avg_brightness > 180 and avg_saturation > 80:
-                return {"hazeLevel": "Good", "estimatedAQI": 25, "confidence": 85}
-            elif avg_brightness > 150 and avg_saturation > 50:
-                return {"hazeLevel": "Moderate", "estimatedAQI": 65, "confidence": 75}
-            elif avg_brightness > 100 and avg_saturation > 20:
-                return {"hazeLevel": "Unhealthy for Sensitive Groups", "estimatedAQI": 110, "confidence": 70}
-            elif avg_brightness > 70:
-                return {"hazeLevel": "Unhealthy", "estimatedAQI": 160, "confidence": 65}
-            else:
-                return {"hazeLevel": "Very Unhealthy", "estimatedAQI": 220, "confidence": 60}
-        else:
-            # No clear sky - estimate from overall brightness
-            avg_brightness = np.mean(hsv[:, :, 2])
-            if avg_brightness > 180:
-                return {"hazeLevel": "Moderate", "estimatedAQI": 70, "confidence": 60}
-            else:
-                return {"hazeLevel": "Unhealthy", "estimatedAQI": 150, "confidence": 65}
-                
-    except Exception as e:
-        logger.error(f"Error in haze analysis: {str(e)}")
-        return {"hazeLevel": "Unknown", "estimatedAQI": 0, "confidence": 0}
+        brightness = np.mean(gray)
+        contrast = np.std(gray)
 
+        # Enhanced haze estimation
+        haze_score = (255 - contrast) * 0.6 + (255 - brightness) * 0.4
+
+        if haze_score < 100:
+            return "Good", "Sky looks clear and visibility is excellent."
+        elif haze_score < 160:
+            return "Moderate", "Mild haze detected. Sensitive individuals should take precautions."
+        else:
+            return "Poor", "Heavy haze detected! Limit outdoor exposure."
+    except Exception as e:
+        logger.error(f"Image analysis failed: {e}")
+        return "Unknown", "Unable to analyze image. Please try again."
+
+# =========================
+# Flask Routes
+# =========================
 @app.route('/crowdvision/upload', methods=['POST'])
 def upload_image():
-    """Handle image uploads - simple and clean"""
     try:
-        # Basic validation
+        # --- Validation ---
         if 'image' not in request.files:
             return jsonify({"error": "No image provided"}), 400
         
         image_file = request.files['image']
         if image_file.filename == '':
             return jsonify({"error": "No file selected"}), 400
-        
-        if not allowed_file(image_file.filename):
-            return jsonify({"error": "Please upload a PNG, JPG, or JPEG image"}), 400
-        
+
         # Get coordinates
         try:
             latitude = float(request.form.get('latitude', -6.2088))
             longitude = float(request.form.get('longitude', 106.8456))
         except:
-            latitude, longitude = -6.2088, 106.8456
-        
-        # Read image
+            return jsonify({"error": "Invalid coordinates"}), 400
+
+        # --- Read Image ---
         image_data = image_file.read()
-        if len(image_data) > MAX_FILE_SIZE:
-            return jsonify({"error": "Image too large. Maximum 10MB"}), 400
         
-        # Analyze image
-        logger.info(f"Analyzing image from {latitude}, {longitude}")
-        analysis_result = analyze_haze_improved(image_data)
-        
-        # Save to database (simple version)
+        # --- Analyze Image ---
+        air_quality, message = analyze_image_simple(image_data)
+
+        # --- Prepare Data ---
         upload_data = {
             "latitude": latitude,
             "longitude": longitude,
-            "timestamp": datetime.now().isoformat(),
-            "haze_level": analysis_result["hazeLevel"],
-            "estimated_aqi": analysis_result["estimatedAQI"],
-            "confidence": analysis_result["confidence"],
-            "validated": False
+            "air_quality": air_quality,
+            "message": message
         }
-        
-        result = supabase.table('crowdvision_submissions').insert(upload_data).execute()
-        
-        # Clean response - only what users need to see
+
+        # --- Store in Supabase ---
+        try:
+            response = supabase.table("crowdvision_submissions").insert(upload_data).execute()
+            logger.info(f"Uploaded data: {upload_data}")
+        except Exception as db_error:
+            logger.error(f"Supabase insert failed: {db_error}")
+            return jsonify({"error": "Database insert failed"}), 500
+
+        # --- Success Response ---
         return jsonify({
             "success": True,
-            "air_quality": analysis_result["hazeLevel"],
-            "health_message": get_health_advice(analysis_result["hazeLevel"])
+            "air_quality": air_quality,
+            "message": message
         }), 200
-        
+
     except Exception as e:
-        logger.error(f"Upload error: {str(e)}")
-        return jsonify({"error": "Failed to process image"}), 500
+        logger.error(f"Unexpected error: {e}")
+        return jsonify({"error": "Failed to process photo"}), 500
 
 @app.route('/crowdvision/health', methods=['GET'])
 def health_check():
-    return jsonify({
-        "status": "healthy", 
-        "service": "CrowdVision API"
-    }), 200
+    return jsonify({"status": "healthy", "service": "CrowdVision API"}), 200
 
-@app.route('/crowdvision/recent', methods=['GET'])
-def get_recent_submissions():
-    """Get recent submissions for dashboard"""
-    try:
-        result = supabase.table('crowdvision_submissions')\
-            .select('latitude, longitude, haze_level, timestamp')\
-            .order('timestamp', desc=True)\
-            .limit(50)\
-            .execute()
-        
-        return jsonify({
-            "success": True,
-            "submissions": result.data
-        }), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# =========================
+# Main Entrypoint
+# =========================
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
-    # Use gunicorn in production, Flask dev server locally
-    if os.environ.get("RAILWAY_ENVIRONMENT"):
-        app.run(host='0.0.0.0', port=port)
-    else:
-        app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port)
+
