@@ -119,13 +119,20 @@ def upload_image():
     except Exception as e:
         logger.error(f" Unexpected error: {e}")
         return jsonify({"error": "Failed to process photo"}), 500
+@app.route('/')
+def home():
+    return jsonify({"message": "CrowdVision API is running"})
 
+@app.route('/crowdvision/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "service": "CrowdVision API"}), 200
 
 # =========================
 # Main Entrypoint
 # =========================
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
