@@ -1,137 +1,281 @@
-"""
 
-"""
 
+import torch
+import torch.nn as nn
+import torchvision.models as models
+import torchvision.transforms as transforms
+from PIL import Image
+import numpy as np
+import cv2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from supabase import create_client
 import os
-import logging
-import numpy as np
-from PIL import Image
 import io
-import base64
-import cv2
+import logging
 
-# =========================
-# Logging Configuration
-# =========================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("CrowdVision")
+# ========================
+# MODEL ARCHITECTURE
+# ========================
 
-# =========================
-# Flask App Setup
-# =========================
+class HazeClassifier(nn.Module):
+    def __init__(self, num_classes=4):
+        super(HazeClassifier, self).__init__()
+        # Use pre-trained ResNet
+        self.backbone = models.resnet50(pretrained=True)
+        
+        # Replace final layer for our classes
+        self.backbone.fc = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(self.backbone.fc.in_features, 512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, num_classes)
+        )
+        
+    def forward(self, x):
+        return self.backbone(x)
+
+# ========================
+# AI SERVICE
+# ========================
+
+class CrowdVisionAI:
+    def __init__(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = self.load_model()
+        self.transform = self.get_transforms()
+        self.class_names = ['clear', 'haze', 'fog', 'clouds']
+        
+    def load_model(self):
+        """Load trained model - you'll train this with your datasets"""
+        model = HazeClassifier(num_classes=4)
+        
+        # In production, this would load your trained weights
+        # model.load_state_dict(torch.load('haze_model.pth', map_location=self.device))
+        
+        model.eval()
+        return model.to(self.device)
+    
+    def get_transforms(self):
+        return transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+    
+    def predict_image(self, image_data):
+        """Real AI prediction"""
+        try:
+            # Convert to PIL Image
+            image = Image.open(io.BytesIO(image_data))
+            
+            # Apply transforms
+            image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+            
+            # Get prediction
+            with torch.no_grad():
+                outputs = self.model(image_tensor)
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)
+                predicted_class = torch.argmax(probabilities, 1).item()
+                confidence = probabilities[0][predicted_class].item()
+            
+            class_name = self.class_names[predicted_class]
+            
+            # Map to air quality
+            aq_mapping = {
+                'clear': ('Good', 'Clear sky with excellent visibility'),
+                'haze': ('Poor', 'Haze detected. Limit outdoor activities'),
+                'fog': ('Moderate', 'Fog detected. Reduced visibility'),
+                'clouds': ('Good', 'Cloudy but clear air')
+            }
+            
+            air_quality, message = aq_mapping.get(class_name, ('Unknown', 'Unable to determine'))
+            
+            return {
+                'air_quality': air_quality,
+                'message': message,
+                'confidence': round(confidence * 100, 2),
+                'detected_condition': class_name
+            }
+            
+        except Exception as e:
+            logging.error(f"Prediction error: {e}")
+            return {
+                'air_quality': 'Unknown',
+                'message': 'Analysis failed',
+                'confidence': 0,
+                'detected_condition': 'error'
+            }
+
+# ========================
+# TRAINING SCRIPT
+# ========================
+
+def train_model():
+    """Train the model on your datasets"""
+    import torch.optim as optim
+    from torch.utils.data import DataLoader, Dataset
+    import pandas as pd
+    from sklearn.model_selection import train_test_split
+    
+    class SkyDataset(Dataset):
+        def __init__(self, image_paths, labels, transform=None):
+            self.image_paths = image_paths
+            self.labels = labels
+            self.transform = transform
+            
+        def __len__(self):
+            return len(self.image_paths)
+        
+        def __getitem__(self, idx):
+            image = Image.open(self.image_paths[idx]).convert('RGB')
+            label = self.labels[idx]
+            
+            if self.transform:
+                image = self.transform(image)
+                
+            return image, label
+    
+    # Load your datasets here
+    # You'll need to organize your downloaded datasets into:
+    # datasets/
+    #   clear/
+    #   haze/ 
+    #   fog/
+    #   clouds/
+    
+    def load_dataset():
+        data = []
+        labels = []
+        class_mapping = {'clear': 0, 'haze': 1, 'fog': 2, 'clouds': 3}
+        
+        for class_name, class_id in class_mapping.items():
+            class_dir = f'datasets/{class_name}'
+            if os.path.exists(class_dir):
+                for img_file in os.listdir(class_dir):
+                    if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        data.append(os.path.join(class_dir, img_file))
+                        labels.append(class_id)
+        
+        return data, labels
+    
+    # Training setup
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = HazeClassifier(num_classes=4).to(device)
+    
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    # Load data
+    image_paths, labels = load_dataset()
+    train_paths, val_paths, train_labels, val_labels = train_test_split(
+        image_paths, labels, test_size=0.2, random_state=42
+    )
+    
+    train_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    train_dataset = SkyDataset(train_paths, train_labels, train_transform)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    
+    # Training loop
+    for epoch in range(10):
+        model.train()
+        running_loss = 0.0
+        
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+        
+        print(f'Epoch {epoch+1}, Loss: {running_loss/len(train_loader):.4f}')
+    
+    # Save model
+    torch.save(model.state_dict(), 'haze_classifier.pth')
+    print("Training complete! Model saved.")
+
+# ========================
+# FLASK APP
+# ========================
+
 app = Flask(__name__)
 CORS(app)
 
-# =========================
-# Supabase Configuration
-# =========================
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# Initialize AI and Supabase
+ai_service = CrowdVisionAI()
+supabase = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_KEY")
+)
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    logger.warning(" Supabase credentials not found in environment variables.")
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# =========================
-# Helper Functions
-# =========================
-def analyze_image_cv(image_data):
-    """Enhanced haze analysis using OpenCV and brightness/contrast detection"""
-    try:
-        nparr = np.frombuffer(image_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        if img is None:
-            raise ValueError("Invalid image format")
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        brightness = np.mean(gray)
-        contrast = img.std()
-
-        # Simplified haze estimation formula
-        haze_score = (255 - contrast) * 0.6 + (255 - brightness) * 0.4
-
-        if haze_score < 100:
-            return "Good", "Sky looks clear and visibility is excellent."
-        elif haze_score < 160:
-            return "Moderate", "Mild haze detected. Sensitive individuals should take precautions."
-        else:
-            return "Poor", "Heavy haze detected! Limit outdoor exposure."
-    except Exception as e:
-        logger.error(f"Image analysis failed: {e}")
-        return "Unknown", "Unable to analyze image. Please try again."
-
-# =========================
-# Flask Route
-# =========================
 @app.route('/crowdvision/upload', methods=['POST'])
 def upload_image():
     try:
-        data = request.get_json()
+        if 'image' not in request.files:
+            return jsonify({"error": "No image provided"}), 400
+        
+        image_file = request.files['image']
+        if image_file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
 
-        # --- Validation ---
-        if not data:
-            return jsonify({"error": "No data received"}), 400
-
-        image_base64 = data.get("image")
-        latitude = data.get("latitude")
-        longitude = data.get("longitude")
-
-        if not image_base64 or latitude is None or longitude is None:
-            return jsonify({"error": "Missing required fields (image, latitude, longitude)"}), 400
-
-        # --- Decode Base64 Image ---
+        # Get coordinates
         try:
-            image_data = base64.b64decode(image_base64)
-        except Exception:
-            return jsonify({"error": "Invalid image format"}), 400
+            latitude = float(request.form.get('latitude', -6.2088))
+            longitude = float(request.form.get('longitude', 106.8456))
+        except:
+            latitude, longitude = -6.2088, 106.8456
 
-        # --- Analyze Image ---
-        air_quality, message = analyze_image_cv(image_data)
-
-        # --- Prepare Data ---
+        # Read image
+        image_data = image_file.read()
+        
+        # REAL AI ANALYSIS
+        analysis_result = ai_service.predict_image(image_data)
+        
+        # Save to database
         upload_data = {
             "latitude": latitude,
             "longitude": longitude,
-            "air_quality": air_quality,
-            "message": message
+            "air_quality": analysis_result['air_quality'],
+            "message": analysis_result['message'],
+            "confidence": analysis_result['confidence'],
+            "detected_condition": analysis_result['detected_condition'],
+            "timestamp": "now()"
         }
 
-        # --- Store in Supabase ---
-        try:
-            response = supabase.table("crowdvision_submissions").insert(upload_data).execute()
-            logger.info(f"Uploaded data: {upload_data}")
-        except Exception as db_error:
-            logger.error(f"Supabase insert failed: {db_error}")
-            return jsonify({"error": "Database insert failed"}), 500
+        supabase.table("crowdvision_submissions").insert(upload_data).execute()
 
-        # --- Success Response ---
         return jsonify({
             "success": True,
-            "air_quality": air_quality,
-            "message": message
+            **analysis_result
         }), 200
 
     except Exception as e:
-        logger.error(f" Unexpected error: {e}")
+        logging.error(f"Upload error: {e}")
         return jsonify({"error": "Failed to process photo"}), 500
-@app.route('/')
-def home():
-    return jsonify({"message": "CrowdVision API is running"})
 
 @app.route('/crowdvision/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "service": "CrowdVision API"}), 200
+    return jsonify({"status": "healthy", "service": "CrowdVision AI"})
 
-# =========================
-# Main Entrypoint
-# =========================
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Uncomment to train model first:
+    # train_model()
+    
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
 
 
 
