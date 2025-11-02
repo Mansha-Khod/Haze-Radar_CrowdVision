@@ -2,11 +2,8 @@ torch
 torchvision
 flask
 flask-cors
-supabase
 pillow
-numpy
-opencv-python
-scikit-learn
+
 
 
 
