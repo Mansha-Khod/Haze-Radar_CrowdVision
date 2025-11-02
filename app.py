@@ -9,7 +9,7 @@ import io
 app = Flask(__name__)
 CORS(app)
 
-# Define model
+# --- MODEL DEFINITION ---
 class HazeDetector(nn.Module):
     def __init__(self):
         super().__init__()
@@ -19,19 +19,19 @@ class HazeDetector(nn.Module):
             nn.Linear(1280, 256),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(256, 2)  # 2 classes: clear, hazy
+            nn.Linear(256, 2)  # 0 = clear, 1 = hazy
         )
 
     def forward(self, x):
         return self.backbone(x)
 
-# Load trained model
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# --- LOAD TRAINED MODEL ---
+device = torch.device("cpu")
 model = HazeDetector().to(device)
 model.load_state_dict(torch.load("haze_detector_colab.pth", map_location=device))
 model.eval()
 
-# Image preprocessing
+# --- IMAGE PREPROCESSING ---
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -45,8 +45,7 @@ def analyze():
         return jsonify({'error': 'No image uploaded'}), 400
 
     image_file = request.files['image']
-    image_bytes = image_file.read()
-    image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+    image = Image.open(io.BytesIO(image_file.read())).convert('RGB')
     img_tensor = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
@@ -56,8 +55,7 @@ def analyze():
         confidence = conf.item()
         label = 'Hazy' if pred.item() == 1 else 'Clear'
 
-    advice = ("Stay indoors! Air is polluted." if label == "Hazy"
-              else "Air is clean. Enjoy the outdoors!")
+    advice = "Stay indoors, air quality is poor!" if label == "Hazy" else "Clear skies! Perfect time for a walk."
 
     return jsonify({
         'condition': label,
@@ -70,7 +68,11 @@ def health():
     return jsonify({'status': 'ok', 'model': 'CrowdVision Haze Detector'})
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
+    import os
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+
 
 
 
