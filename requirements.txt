@@ -6,9 +6,9 @@ pillow
 numpy
 opencv-python-headless
 gunicorn
-torch==2.0.1+cpu
-torchvision==0.15.2+cpu
-# The extra index url below will be used by pip when installing wheels:
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+torchaudio==2.5.1+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 
