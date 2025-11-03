@@ -1,6 +1,6 @@
 """
 CrowdVision Inference API
-Deploy this on Render/Hugging Face Spaces for real-time haze detection
+
 """
 
 from flask import Flask, request, jsonify
@@ -41,6 +41,21 @@ class CrowdVisionModel(nn.Module):
 # ============================================================================
 # LOAD MODEL
 # ============================================================================
+
+import gdown
+import os
+
+def download_model():
+    if not os.path.exists('crowd_vision_model.pth'):
+        print("📥 Downloading model from Google Drive...")
+        # Your Google Drive file ID
+        file_id = "1fCuv2AzaLToXcMq9x7ZVCafY2Ks5CN2J"
+        url = f'https://drive.google.com/uc?id={file_id}'
+        gdown.download(url, 'crowd_vision_model.pth', quiet=False)
+        print("✅ Model downloaded successfully!")
+
+# Download model first
+download_model()
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = CrowdVisionModel(num_classes=2).to(device)
@@ -334,6 +349,7 @@ def home():
 if __name__ == '__main__':
     
     app.run(debug=False, host='0.0.0.0', port=7860)
+
 
 
 
