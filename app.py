@@ -354,10 +354,14 @@ def home():
         },
         'status': 'active'
     })
-import os
+if __name__ == "__main__":
+    import os
 
-port = int(os.environ.get("PORT", 7860))
-app.run(debug=False, host='0.0.0.0', port=port)
+    # Use whatever port the host gives us, or default to 8080
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🚀 Starting server on port {port}...")
+    app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
