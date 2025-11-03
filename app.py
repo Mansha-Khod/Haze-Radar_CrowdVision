@@ -1,30 +1,37 @@
-"""
-CrowdVision Inference API
-
-"""
+# app.py
+import os
+import io
+import time
+import requests
+import base64
+from datetime import datetime
+from threading import Lock
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
+import numpy as np
 import torch
 import torch.nn as nn
-from torchvision import models, transforms
-import io
-import base64
-import numpy as np
-import cv2
-from datetime import datetime
+from torchvision import transforms, models
 
+# ---------- Config via env ----------
+MODEL_GDRIVE_ID = os.environ.get("MODEL_GDRIVE_ID")  # Google Drive file id
+MODEL_LOCAL_PATH = os.environ.get("MODEL_LOCAL_PATH", "crowd_vision_model.pth")
+NUM_CLASSES = int(os.environ.get("NUM_CLASSES", "2"))
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+# ---------- Flask ----------
 app = Flask(__name__)
-CORS(app)  # Enable CORS for dashboard integration
+CORS(app)
 
-# ============================================================================
-# MODEL DEFINITION (Same as training)
-# ============================================================================
-
+# ---------- Minimal model definition (match your training architecture) ----------
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
-        super(CrowdVisionModel, self).__init__()
+        super().__init__()
+        # NOTE: use the same backbone & classifier you trained with
         self.backbone = models.efficientnet_b0(pretrained=False)
         in_features = self.backbone.classifier[1].in_features
         self.backbone.classifier = nn.Sequential(
@@ -34,336 +41,249 @@ class CrowdVisionModel(nn.Module):
             nn.Dropout(p=0.2),
             nn.Linear(256, num_classes)
         )
-        
     def forward(self, x):
         return self.backbone(x)
 
-# ============================================================================
-# LOAD MODEL
-# ============================================================================
-
-import gdown
-import os
-
-def download_model():
-    model_path = "crowd_vision_model.pth"
-    if not os.path.exists(model_path):
-        print("📥 Downloading model from Google Drive...")
-        url = "https://drive.google.com/uc?id=1fCuv2AzaLToXcMq9x7ZVCafY2Ks5CN2J"
-        try:
-            gdown.download(url, model_path, quiet=False, use_cookies=False)
-            print("✅ Model downloaded successfully!")
-        except Exception as e:
-            print(f"❌ Failed to download model: {e}")
-            print("⚠️ Trying alternative method with wget...")
-            os.system(f"wget --no-check-certificate '{url}' -O {model_path}")
-            if os.path.exists(model_path):
-                print("✅ Model downloaded successfully via wget!")
-            else:
-                print("🚨 Still failed to download model. Check Drive permissions.")
-
-download_model()
-
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = CrowdVisionModel(num_classes=2).to(device)
-
-# Load trained weights
-try:
-    checkpoint = torch.load('crowd_vision_model.pth', map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    print(f"✓ Model loaded successfully on {device}")
-except Exception as e:
-    print(f"Error loading model: {e}")
-
-# ============================================================================
-# IMAGE PREPROCESSING
-# ============================================================================
-
+# ---------- Transform ----------
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
 ])
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
+# ---------- model download (robust Google Drive helper) ----------
+def download_from_gdrive(id, dest, max_retries=3, chunk_size=32768):
+    """
+    Download large files from Google Drive by handling confirm token.
+    """
+    URL = "https://docs.google.com/uc?export=download"
+    session = requests.Session()
+    for attempt in range(max_retries):
+        try:
+            response = session.get(URL, params={'id': id}, stream=True, timeout=30)
+            token = None
+            # search for confirm token in cookies or response
+            for key, value in session.cookies.items():
+                if key.startswith('download_warning'):
+                    token = value
+            if token:
+                response = session.get(URL, params={'id': id, 'confirm': token}, stream=True, timeout=30)
 
+            # If the response is HTML instead of file, still attempt to parse confirm link
+            if 'Content-Type' in response.headers and 'text/html' in response.headers['Content-Type']:
+                # try to find confirm token from content
+                text = response.text
+                import re
+                m = re.search(r"confirm=([0-9A-Za-z_]+)&", text)
+                if m:
+                    token = m.group(1)
+                    response = session.get(URL, params={'id': id, 'confirm': token}, stream=True, timeout=30)
+
+            # Write to file
+            with open(dest, "wb") as f:
+                for chunk in response.iter_content(chunk_size):
+                    if chunk:
+                        f.write(chunk)
+            # quick check
+            if os.path.getsize(dest) > 1024:
+                return True
+        except Exception as e:
+            last_err = e
+            time.sleep(2 + attempt*2)
+            continue
+    raise RuntimeError(f"Failed to download from Google Drive: {last_err}")
+
+# ---------- Load model once thread-safely ----------
+model = None
+model_lock = Lock()
+
+def ensure_model_loaded():
+    global model
+    with model_lock:
+        if model is not None:
+            return model
+
+        # download if needed
+        if not os.path.exists(MODEL_LOCAL_PATH):
+            if not MODEL_GDRIVE_ID:
+                raise RuntimeError("MODEL_GDRIVE_ID env var not set and model file not found.")
+            app.logger.info("Downloading model from Google Drive...")
+            download_from_gdrive(MODEL_GDRIVE_ID, MODEL_LOCAL_PATH)
+            app.logger.info("Model downloaded.")
+
+        # instantiate model and load state
+        net = CrowdVisionModel(num_classes=NUM_CLASSES).to(DEVICE)
+
+        try:
+            checkpoint = torch.load(MODEL_LOCAL_PATH, map_location=DEVICE)
+            # support two styles: either dict with 'model_state_dict' or raw state_dict
+            state_dict = None
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            else:
+                state_dict = checkpoint
+
+            # load with strict=False to avoid missing/extra keys crash
+            net.load_state_dict(state_dict, strict=False)
+            net.eval()
+            app.logger.info("Model loaded into memory.")
+        except Exception as e:
+            app.logger.exception("Error loading model, re-raising.")
+            raise
+
+        model = net
+        return model
+
+# ---------- Utility: image -> tensor ----------
+def pil_to_tensor(img_pil):
+    if img_pil.mode != "RGB":
+        img_pil = img_pil.convert("RGB")
+    return transform(img_pil).unsqueeze(0)
+
+# ---------- Simple visibility metrics ----------
+import cv2
 def calculate_visibility_score(image_array):
-    """
-    Calculate visibility metrics from image
-    Returns score from 0 (very hazy) to 100 (very clear)
-    """
-    # Convert to grayscale
     gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
-    
-    # Calculate contrast (standard deviation)
-    contrast = gray.std()
-    
-    # Calculate edge density (clear images have more edges)
+    contrast = float(gray.std())
     edges = cv2.Canny(gray, 50, 150)
-    edge_density = np.sum(edges > 0) / edges.size
-    
-    # Calculate brightness
-    brightness = np.mean(gray)
-    
-    # Combine metrics into visibility score
+    edge_density = float(np.sum(edges > 0) / edges.size)
+    brightness = float(gray.mean())
     visibility_score = min(100, (contrast * 1.5 + edge_density * 300 + (brightness - 128) * 0.2))
     visibility_score = max(0, visibility_score)
-    
     return visibility_score, contrast, edge_density, brightness
 
-def get_health_advice(prediction, confidence, visibility_score):
-    """
-    Generate health advice based on prediction and visibility
-    """
-    if prediction == 'clear':
-        if confidence > 0.85 and visibility_score > 70:
-            return {
-                'status': 'excellent',
-                'advice': 'Air quality looks excellent! Perfect time for outdoor activities.',
-                'recommendations': [
-                    '✓ Great for outdoor exercise',
-                    '✓ Safe for children to play outside',
-                    '✓ Ideal for morning/evening walks'
-                ],
-                'icon': '☀️',
-                'color': '#10b981'  # green
-            }
-        elif confidence > 0.7:
-            return {
-                'status': 'good',
-                'advice': 'Sky appears mostly clear. Generally safe for outdoor activities.',
-                'recommendations': [
-                    '✓ Safe for outdoor activities',
-                    '✓ Monitor air quality if exercising intensely',
-                    '✓ Sensitive individuals should be cautious'
-                ],
-                'icon': '⛅',
-                'color': '#84cc16'  # light green
-            }
+# ---------- Health advice (example) ----------
+def get_health_advice_binary(prediction, confidence, vis_score):
+    # This is an example mapping — customize as you feel right
+    if prediction == "clear":
+        if confidence > 0.85 and vis_score > 70:
+            status = "excellent"
+            advice = "Air quality looks excellent. Safe to be outside."
         else:
-            return {
-                'status': 'moderate',
-                'advice': 'Conditions are uncertain. Check local air quality readings.',
-                'recommendations': [
-                    '⚠ Check AQI before prolonged outdoor activity',
-                    '⚠ Sensitive groups should limit outdoor exposure',
-                    '⚠ Consider indoor alternatives if feeling discomfort'
-                ],
-                'icon': '🌤️',
-                'color': '#facc15'  # yellow
-            }
-    else:  # hazy
-        if confidence > 0.85 and visibility_score < 40:
-            return {
-                'status': 'unhealthy',
-                'advice': 'Significant haze detected. Refrain from outdoor activities.',
-                'recommendations': [
-                    '✗ Avoid outdoor exercise',
-                    '✗ Keep windows closed',
-                    '✗ Use air purifiers indoors',
-                    '✗ Wear N95 masks if going outside is necessary',
-                    '✗ Vulnerable groups should stay indoors'
-                ],
-                'icon': '🌫️',
-                'color': '#ef4444'  # red
-            }
-        elif confidence > 0.7:
-            return {
-                'status': 'unhealthy_sensitive',
-                'advice': 'Haze detected. Limit outdoor activities, especially for sensitive groups.',
-                'recommendations': [
-                    '⚠ Limit prolonged outdoor activities',
-                    '⚠ Sensitive individuals should stay indoors',
-                    '⚠ Close windows during peak haze hours',
-                    '⚠ Consider wearing masks outdoors'
-                ],
-                'icon': '😷',
-                'color': '#f97316'  # orange
-            }
+            status = "good"
+            advice = "Mostly clear. Sensitive people may monitor."
+    else:
+        if confidence > 0.8 and vis_score < 45:
+            status = "unhealthy"
+            advice = "High haze detected. Avoid outdoor activities."
         else:
-            return {
-                'status': 'moderate',
-                'advice': 'Possible haze detected. Monitor conditions and limit outdoor exposure.',
-                'recommendations': [
-                    '⚠ Check local air quality updates',
-                    '⚠ Reduce outdoor activities if feeling discomfort',
-                    '⚠ Keep emergency contacts handy'
-                ],
-                'icon': '🌥️',
-                'color': '#facc15'  # yellow
-            }
+            status = "moderate"
+            advice = "Possible haze. Consider limiting outdoor exertion."
+    return {"status": status, "advice": advice}
 
-# ============================================================================
-# API ENDPOINTS
-# ============================================================================
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'model_loaded': model is not None,
-        'device': str(device),
-        'timestamp': datetime.utcnow().isoformat()
-    })
-
-@app.route('/predict', methods=['POST'])
-def predict():
-    """
-    Main prediction endpoint
-    Accepts: image file or base64 encoded image
-    Returns: prediction, confidence, visibility metrics, and health advice
-    """
+# ---------- Endpoints ----------
+@app.route("/health", methods=["GET"])
+def health():
     try:
-        # Get image from request
-        if 'image' in request.files:
-            # File upload
-            image_file = request.files['image']
-            image = Image.open(image_file).convert('RGB')
-        elif 'image_base64' in request.json:
-            # Base64 encoded image
-            image_data = base64.b64decode(request.json['image_base64'])
-            image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        else:
-            return jsonify({'error': 'No image provided'}), 400
-        
-        # Convert PIL to numpy for visibility analysis
-        image_array = np.array(image)
-        
-        # Calculate visibility metrics
-        visibility_score, contrast, edge_density, brightness = calculate_visibility_score(image_array)
-        
-        # Preprocess for model
-        image_tensor = transform(image).unsqueeze(0).to(device)
-        
-        # Make prediction
-        with torch.no_grad():
-            outputs = model(image_tensor)
-            probabilities = torch.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probabilities, 1)
-            
-            confidence = confidence.item()
-            predicted_class = predicted.item()
-        
-        # Map to labels
-        label_map = {0: 'clear', 1: 'hazy'}
-        prediction = label_map[predicted_class]
-        
-        # Get health advice
-        health_info = get_health_advice(prediction, confidence, visibility_score)
-        
-        # Prepare response
-        response = {
-            'success': True,
-            'prediction': prediction,
-            'confidence': round(confidence * 100, 2),
-            'visibility_score': round(visibility_score, 2),
-            'metrics': {
-                'contrast': round(contrast, 2),
-                'edge_density': round(edge_density * 100, 2),
-                'brightness': round(brightness, 2)
-            },
-            'health': health_info,
-            'timestamp': datetime.utcnow().isoformat(),
-            'location': request.json.get('location', 'Unknown') if request.json else 'Unknown'
-        }
-        
-        return jsonify(response)
-    
-    except Exception as e:
+        loaded = os.path.exists(MODEL_LOCAL_PATH)
         return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-@app.route('/batch_predict', methods=['POST'])
-def batch_predict():
-    """
-    Batch prediction endpoint for multiple images
-    Accepts: list of base64 encoded images
-    """
-    try:
-        images_data = request.json.get('images', [])
-        
-        if not images_data:
-            return jsonify({'error': 'No images provided'}), 400
-        
-        results = []
-        
-        for idx, img_data in enumerate(images_data):
-            try:
-                # Decode image
-                image_bytes = base64.b64decode(img_data['image_base64'])
-                image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-                image_array = np.array(image)
-                
-                # Calculate metrics
-                visibility_score, _, _, _ = calculate_visibility_score(image_array)
-                
-                # Predict
-                image_tensor = transform(image).unsqueeze(0).to(device)
-                with torch.no_grad():
-                    outputs = model(image_tensor)
-                    probabilities = torch.softmax(outputs, dim=1)
-                    confidence, predicted = torch.max(probabilities, 1)
-                
-                label_map = {0: 'clear', 1: 'hazy'}
-                prediction = label_map[predicted.item()]
-                
-                results.append({
-                    'image_id': img_data.get('id', idx),
-                    'prediction': prediction,
-                    'confidence': round(confidence.item() * 100, 2),
-                    'visibility_score': round(visibility_score, 2)
-                })
-            
-            except Exception as e:
-                results.append({
-                    'image_id': img_data.get('id', idx),
-                    'error': str(e)
-                })
-        
-        return jsonify({
-            'success': True,
-            'results': results,
-            'total_processed': len(results),
-            'timestamp': datetime.utcnow().isoformat()
+            "status": "ok",
+            "model_present": loaded,
+            "device": str(DEVICE),
+            "timestamp": datetime.utcnow().isoformat()
         })
-    
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"status": "error", "error": str(e)}), 500
 
-# ============================================================================
-# RUN APP
-# ============================================================================
-@app.route('/')
-def home():
-    return jsonify({
-        'message': 'CrowdVision Haze Detection API is running!',
-        'endpoints': {
-            'health': '/health (GET)',
-            'predict': '/predict (POST)',
-            'batch_predict': '/batch_predict (POST)'
-        },
-        'status': 'active'
-    })
+@app.route("/predict", methods=["POST"])
+def predict():
+    try:
+        # ensure model loaded
+        net = ensure_model_loaded()
+
+        # accept file upload or base64 or image_url in json
+        if "image" in request.files:
+            image_file = request.files["image"]
+            img = Image.open(image_file.stream).convert("RGB")
+        else:
+            data = request.get_json(force=True, silent=True) or {}
+            if "image_base64" in data:
+                img = Image.open(io.BytesIO(base64.b64decode(data["image_base64"]))).convert("RGB")
+            elif "image_url" in data:
+                resp = requests.get(data["image_url"], timeout=20)
+                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            else:
+                return jsonify({"error": "No image provided; send multipart 'image' file or JSON with 'image_url' or 'image_base64'."}), 400
+
+        # metrics
+        img_arr = np.array(img)
+        vis_score, contrast, edge_density, brightness = calculate_visibility_score(img_arr)
+
+        # predict
+        tensor = pil_to_tensor(img).to(DEVICE)
+        with torch.no_grad():
+            outputs = net(tensor)
+            probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
+            pred_idx = int(np.argmax(probs))
+            conf = float(probs[pred_idx])
+
+        # map classes (adjust to your actual labels)
+        label_map = {0: "clear", 1: "hazy"}
+        prediction = label_map.get(pred_idx, str(pred_idx))
+        health = get_health_advice_binary(prediction, conf, vis_score)
+
+        result = {
+            "success": True,
+            "prediction": prediction,
+            "confidence": round(conf * 100, 2),
+            "visibility_score": round(vis_score, 2),
+            "metrics": {"contrast": round(contrast, 2), "edge_density": round(edge_density, 3), "brightness": round(brightness, 2)},
+            "health": health,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        return jsonify(result)
+    except Exception as e:
+        app.logger.exception("Predict error")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/batch_predict", methods=["POST"])
+def batch_predict():
+    try:
+        net = ensure_model_loaded()
+        data = request.get_json(force=True)
+        imgs = data.get("images", [])
+        if not isinstance(imgs, list) or len(imgs) == 0:
+            return jsonify({"error": "Provide JSON: {images: [ {image_url:...} | {image_base64:...} ... ] }"}), 400
+        results = []
+        for i, item in enumerate(imgs):
+            try:
+                if "image_base64" in item:
+                    img = Image.open(io.BytesIO(base64.b64decode(item["image_base64"]))).convert("RGB")
+                elif "image_url" in item:
+                    resp = requests.get(item["image_url"], timeout=20)
+                    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                else:
+                    raise ValueError("No image data in item")
+                img_arr = np.array(img)
+                vis_score, _, _, _ = calculate_visibility_score(img_arr)
+                tensor = pil_to_tensor(img).to(DEVICE)
+                with torch.no_grad():
+                    outputs = net(tensor)
+                    probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
+                    pred_idx = int(np.argmax(probs))
+                    conf = float(probs[pred_idx])
+                label_map = {0: "clear", 1: "hazy"}
+                results.append({
+                    "id": item.get("id", i),
+                    "prediction": label_map.get(pred_idx, str(pred_idx)),
+                    "confidence": round(conf * 100, 2),
+                    "visibility_score": round(vis_score, 2)
+                })
+            except Exception as e:
+                results.append({"id": item.get("id", i), "error": str(e)})
+        return jsonify({"success": True, "results": results, "timestamp": datetime.utcnow().isoformat()})
+    except Exception as e:
+        app.logger.exception("Batch predict error")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 if __name__ == "__main__":
-    import os
-    import random
+    port = int(os.environ.get("PORT", 8080))
+    # Use Flask dev server for local testing; in production Render will call Gunicorn.
+    app.run(host="0.0.0.0", port=port)
 
-    # Randomly pick a port between 1000–9999 to avoid conflicts
-    port = int(os.environ.get("PORT", random.randint(1000, 9999)))
-    print(f"🚀 Starting server on port {port}...")
-
-    # Run Flask safely on an available port
-    app.run(host="0.0.0.0", port=port, debug=False)
 
 
 
