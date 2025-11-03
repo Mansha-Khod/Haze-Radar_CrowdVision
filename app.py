@@ -356,11 +356,15 @@ def home():
     })
 if __name__ == "__main__":
     import os
+    import random
 
-    # Use whatever port the host gives us, or default to 8080
-    port = int(os.environ.get("PORT", 8080))
+    # Randomly pick a port between 1000–9999 to avoid conflicts
+    port = int(os.environ.get("PORT", random.randint(1000, 9999)))
     print(f"🚀 Starting server on port {port}...")
+
+    # Run Flask safely on an available port
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
