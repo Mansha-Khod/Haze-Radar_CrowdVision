@@ -1,12 +1,16 @@
-# requirements.txt - This cuts ~2-3GB!
-torch --index-url https://download.pytorch.org/whl/cpu
-torchvision --index-url https://download.pytorch.org/whl/cpu
-flask
+# requirements.txt
+flask>=2.1
 flask-cors
+requests
 pillow
-opencv-python-headless
 numpy
-gdown
+opencv-python-headless
+gunicorn
+torch==2.0.1+cpu
+torchvision==0.15.2+cpu
+# The extra index url below will be used by pip when installing wheels:
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 
 
 
