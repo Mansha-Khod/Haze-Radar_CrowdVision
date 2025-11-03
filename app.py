@@ -46,16 +46,24 @@ import gdown
 import os
 
 def download_model():
-    if not os.path.exists('crowd_vision_model.pth'):
+    model_path = "crowd_vision_model.pth"
+    if not os.path.exists(model_path):
         print("📥 Downloading model from Google Drive...")
-        # Your Google Drive file ID
-        file_id = "1fCuv2AzaLToXcMq9x7ZVCafY2Ks5CN2J"
-        url = f'https://drive.google.com/uc?id={file_id}'
-        gdown.download(url, 'crowd_vision_model.pth', quiet=False)
-        print("✅ Model downloaded successfully!")
+        url = "https://drive.google.com/uc?id=1fCuv2AzaLToXcMq9x7ZVCafY2Ks5CN2J"
+        try:
+            gdown.download(url, model_path, quiet=False, use_cookies=False)
+            print("✅ Model downloaded successfully!")
+        except Exception as e:
+            print(f"❌ Failed to download model: {e}")
+            print("⚠️ Trying alternative method with wget...")
+            os.system(f"wget --no-check-certificate '{url}' -O {model_path}")
+            if os.path.exists(model_path):
+                print("✅ Model downloaded successfully via wget!")
+            else:
+                print("🚨 Still failed to download model. Check Drive permissions.")
 
-# Download model first
 download_model()
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = CrowdVisionModel(num_classes=2).to(device)
@@ -349,6 +357,7 @@ def home():
 if __name__ == '__main__':
     
     app.run(debug=False, host='0.0.0.0', port=7860)
+
 
 
 
