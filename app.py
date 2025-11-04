@@ -48,18 +48,18 @@ def download_model():
     file_id = os.getenv("GOOGLE_DRIVE_FILE_ID")
     
     if not os.path.exists(model_path):
-        print("📥 Downloading model from Google Drive...")
+        print(" Downloading model from Google Drive...")
         url = f"https://drive.google.com/uc?id={file_id}"
         try:
             gdown.download(url, model_path, quiet=False, use_cookies=False)
-            print("✅ Model downloaded successfully!")
+            print(" Model downloaded successfully!")
         except Exception as e:
-            print(f"❌ Failed to download model: {e}")
+            print(f" Failed to download model: {e}")
             os.system(f"wget --no-check-certificate '{url}' -O {model_path}")
             if os.path.exists(model_path):
-                print("✅ Model downloaded successfully via wget!")
+                print(" Model downloaded successfully via wget!")
             else:
-                print("🚨 Model download failed. Check Google Drive link!")
+                print(" Model download failed. Check Google Drive link!")
 
 download_model()
 
@@ -79,7 +79,7 @@ except Exception as e:
 # =====================================================================
 
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((128, 128)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -179,6 +179,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
