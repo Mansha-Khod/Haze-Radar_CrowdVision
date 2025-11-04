@@ -12,6 +12,7 @@ import io
 import numpy as np
 import cv2
 from datetime import datetime
+torch.set_num_threads(1)
 
 # =====================================================================
 # FLASK SETUP
@@ -178,6 +179,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
