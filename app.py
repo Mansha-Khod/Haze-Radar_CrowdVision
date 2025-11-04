@@ -94,8 +94,13 @@ def calculate_visibility_score(image_array):
     edges = cv2.Canny(gray, 50, 150)
     edge_density = np.sum(edges > 0) / edges.size
     brightness = np.mean(gray)
-    visibility_score = min(100, (contrast * 1.5 + edge_density * 300 + (brightness - 128) * 0.2))
-    return max(0, visibility_score), contrast, edge_density, brightness
+    
+    # Visibility calibration
+    raw_score = (contrast * 1.2 + edge_density * 200 + (brightness - 100) * 0.15)
+    visibility_score = max(0, min(100, raw_score))
+    
+    return visibility_score, contrast, edge_density, brightness
+
 
 # =====================================================================
 # API ENDPOINTS
@@ -147,6 +152,14 @@ def predict():
         label_map = {0: 'clear', 1: 'hazy'}
         prediction = label_map[predicted.item()]
         confidence = round(confidence.item() * 100, 2)
+        # Adjust prediction based on visibility_score to make it more realistic
+        if prediction == "clear" and visibility_score < 40:
+            prediction = "hazy"
+            confidence = min(confidence, 75.0)
+        elif prediction == "hazy" and visibility_score > 80:
+            prediction = "clear"
+            confidence = min(confidence, 70.0)
+
 
         return jsonify({
             'success': True,
@@ -179,6 +192,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
