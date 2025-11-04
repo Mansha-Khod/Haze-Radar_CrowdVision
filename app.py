@@ -87,6 +87,15 @@ transform = transforms.Compose([
 # =====================================================================
 # HELPER FUNCTIONS
 # =====================================================================
+def detect_warm_tone(image_array):
+    hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
+    avg_hue = np.mean(hsv[:, :, 0])
+    avg_saturation = np.mean(hsv[:, :, 1])
+    
+    # Detect orange/yellow tone dominance
+    if 15 < avg_hue < 40 and avg_saturation > 80:
+        return True  # warm/hazy tone detected
+    return False
 
 def calculate_visibility_score(image_array):
     gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
@@ -96,7 +105,8 @@ def calculate_visibility_score(image_array):
     brightness = np.mean(gray)
     
     # Visibility calibration
-    raw_score = (contrast * 1.2 + edge_density * 200 + (brightness - 100) * 0.15)
+    raw_score = (contrast * 1.1 + edge_density * 180 + (brightness - 110) * 0.12)
+
     visibility_score = max(0, min(100, raw_score))
     
     return visibility_score, contrast, edge_density, brightness
@@ -160,6 +170,16 @@ def predict():
             prediction = "clear"
             confidence = min(confidence, 70.0)
 
+        if detect_warm_tone(image_array):
+            # If the image is very warm but visibility is below 60, likely haze
+            if visibility_score < 60:
+                prediction = "hazy"
+                confidence = min(confidence, 75)
+        # If the visibility is high but brightness is moderate (cloudy sky)
+        if prediction == "hazy" and 60 < visibility_score < 90:
+            if 90 < brightness < 160:  # brightness range for cloudy clear skies
+                prediction = "clear"
+                confidence = min(confidence + 10, 95)
 
         return jsonify({
             'success': True,
@@ -192,6 +212,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
