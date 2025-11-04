@@ -110,16 +110,32 @@ def health_check():
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
+        # Case 1 — user uploaded a file (multipart/form-data)
         if 'image' in request.files:
             image_file = request.files['image']
             image = Image.open(image_file).convert('RGB')
+
+        # Case 2 — frontend sends base64 JSON
+        elif request.is_json:
+            data = request.get_json(silent=True, force=True)
+            if 'image_base64' in data:
+                image_data = base64.b64decode(data['image_base64'])
+                image = Image.open(io.BytesIO(image_data)).convert('RGB')
+            else:
+                return jsonify({'error': 'Missing image_base64 field'}), 400
         else:
             return jsonify({'error': 'No image provided'}), 400
 
+        # Convert PIL image → NumPy
         image_array = np.array(image)
+
+        # Calculate visibility
         visibility_score, contrast, edge_density, brightness = calculate_visibility_score(image_array)
+
+        # Preprocess for model
         image_tensor = transform(image).unsqueeze(0).to(device)
 
+        # Run inference
         with torch.no_grad():
             outputs = model(image_tensor)
             probabilities = torch.softmax(outputs, dim=1)
@@ -141,8 +157,10 @@ def predict():
             },
             'timestamp': datetime.utcnow().isoformat()
         })
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/')
 def home():
@@ -158,6 +176,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
