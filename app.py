@@ -128,7 +128,8 @@ def health_check():
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        # Case 1 — user uploaded a file (multipart/form-data)
+        import base64  # make sure base64 is available
+        # Case 1 — user uploaded a file
         if 'image' in request.files:
             image_file = request.files['image']
             image = Image.open(image_file).convert('RGB')
@@ -144,16 +145,15 @@ def predict():
         else:
             return jsonify({'error': 'No image provided'}), 400
 
-        # Convert PIL image → NumPy
+        # Convert image → numpy
         image_array = np.array(image)
 
-        # Calculate visibility
+        # Calculate metrics
         visibility_score, contrast, edge_density, brightness = calculate_visibility_score(image_array)
 
-        # Preprocess for model
+        # Prepare tensor for model
         image_tensor = transform(image).unsqueeze(0).to(device)
 
-        # Run inference
         with torch.no_grad():
             outputs = model(image_tensor)
             probabilities = torch.softmax(outputs, dim=1)
@@ -162,24 +162,28 @@ def predict():
         label_map = {0: 'clear', 1: 'hazy'}
         prediction = label_map[predicted.item()]
         confidence = round(confidence.item() * 100, 2)
-        # Adjust prediction based on visibility_score to make it more realistic
-        if prediction == "clear" and visibility_score < 40:
-            prediction = "hazy"
-            confidence = min(confidence, 75.0)
-        elif prediction == "hazy" and visibility_score > 80:
-            prediction = "clear"
-            confidence = min(confidence, 70.0)
 
-        if detect_warm_tone(image_array):
-            # If the image is very warm but visibility is below 60, likely haze
-            if visibility_score < 60:
-                prediction = "hazy"
-                confidence = min(confidence, 75)
-        # If the visibility is high but brightness is moderate (cloudy sky)
-        if prediction == "hazy" and 60 < visibility_score < 90:
-            if 90 < brightness < 160:  # brightness range for cloudy clear skies
-                prediction = "clear"
-                confidence = min(confidence + 10, 95)
+        # --- Warm tone detection ---
+        hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
+        mean_hue = np.mean(hsv[:, :, 0])
+        warm_tone = mean_hue < 30 or mean_hue > 160  # yellow-red regions
+
+        # --- Smart Correction Layer ---
+        if visibility_score > 70 and contrast < 40 and edge_density < 0.05:
+            prediction = "hazy"
+            confidence = min(confidence + 10, 90)
+        elif warm_tone and visibility_score < 85:
+            prediction = "hazy"
+            confidence = min(confidence + 15, 95)
+        elif prediction == "hazy" and 60 < visibility_score < 90 and 90 < brightness < 160:
+            prediction = "clear"
+            confidence = min(confidence + 10, 95)
+        elif brightness > 190 and contrast < 30:
+            prediction = "hazy"
+            confidence = min(confidence, 85)
+
+        # --- Visibility calibration tweak ---
+        visibility_score = min(100, max(0, (contrast * 1.3 + edge_density * 220 + (brightness - 120) * 0.1)))
 
         return jsonify({
             'success': True,
@@ -189,7 +193,8 @@ def predict():
             'metrics': {
                 'contrast': round(contrast, 2),
                 'edge_density': round(edge_density * 100, 2),
-                'brightness': round(brightness, 2)
+                'brightness': round(brightness, 2),
+                'warm_tone': float(mean_hue)
             },
             'timestamp': datetime.utcnow().isoformat()
         })
@@ -212,6 +217,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
