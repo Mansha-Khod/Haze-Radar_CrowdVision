@@ -43,7 +43,7 @@ class CrowdVisionModel(nn.Module):
 # =========================================================
 import gdown
 
-MODEL_PATH = "crowdvision_final_ohaze.pth"
+MODEL_PATH = "crowd_vision_model.pth"
 FILE_ID = "1PLoMmldxg7QZKONrb29CVKtqB9_kZjac"
 
 if not os.path.exists(MODEL_PATH):
@@ -144,6 +144,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
