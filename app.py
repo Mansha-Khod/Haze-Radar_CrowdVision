@@ -41,6 +41,19 @@ class CrowdVisionModel(nn.Module):
 # =========================================================
 # LOAD TRAINED WEIGHTS
 # =========================================================
+import gdown
+
+MODEL_PATH = "crowdvision_final_ohaze.pth"
+FILE_ID = "1PLoMmldxg7QZKONrb29CVKtqB9_kZjac"
+
+if not os.path.exists(MODEL_PATH):
+    print("📥 Downloading model from Google Drive...")
+    url = f"https://drive.google.com/uc?id={FILE_ID}"
+    gdown.download(url, MODEL_PATH, quiet=False)
+    print("✅ Model downloaded successfully!")
+else:
+    print("✓ Model already exists, skipping download.")
+
 model = CrowdVisionModel(num_classes=2).to(device)
 model.load_state_dict(torch.load("crowd_vision_model.pth", map_location=device))
 model.eval()
@@ -131,6 +144,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
