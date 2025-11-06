@@ -1,222 +1,138 @@
-import base64
-
 import os
-import gdown
+import io
 import torch
 import torch.nn as nn
+import numpy as np
+import cv2
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from torchvision import models, transforms
 from PIL import Image
-import io
-import numpy as np
-import cv2
-from datetime import datetime
-torch.set_num_threads(1)
 
-# =====================================================================
+# =========================================================
 # FLASK SETUP
-# =====================================================================
+# =========================================================
 app = Flask(__name__)
 CORS(app)
 
-# =====================================================================
-# MODEL SETUP
-# =====================================================================
+device = torch.device("cpu")
+torch.set_num_threads(1)
 
+# =========================================================
+# MODEL ARCHITECTURE (must match training)
+# =========================================================
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
         super(CrowdVisionModel, self).__init__()
-        self.backbone = models.efficientnet_b0(pretrained=False)
+        self.backbone = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
         in_features = self.backbone.classifier[1].in_features
         self.backbone.classifier = nn.Sequential(
-            nn.Dropout(p=0.3),
+            nn.Dropout(0.3),
             nn.Linear(in_features, 256),
             nn.ReLU(),
-            nn.Dropout(p=0.2),
+            nn.Dropout(0.2),
             nn.Linear(256, num_classes)
         )
+
     def forward(self, x):
         return self.backbone(x)
 
-# =====================================================================
-# DOWNLOAD MODEL FROM GOOGLE DRIVE
-# =====================================================================
-
-def download_model():
-    model_path = os.getenv("MODEL_PATH", "crowd_vision_model.pth")
-    file_id = os.getenv("GOOGLE_DRIVE_FILE_ID")
-    
-    if not os.path.exists(model_path):
-        print(" Downloading model from Google Drive...")
-        url = f"https://drive.google.com/uc?id={file_id}"
-        try:
-            gdown.download(url, model_path, quiet=False, use_cookies=False)
-            print(" Model downloaded successfully!")
-        except Exception as e:
-            print(f" Failed to download model: {e}")
-            os.system(f"wget --no-check-certificate '{url}' -O {model_path}")
-            if os.path.exists(model_path):
-                print(" Model downloaded successfully via wget!")
-            else:
-                print(" Model download failed. Check Google Drive link!")
-
-download_model()
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# =========================================================
+# LOAD TRAINED WEIGHTS
+# =========================================================
 model = CrowdVisionModel(num_classes=2).to(device)
+model.load_state_dict(torch.load("crowdvision_final_ohaze.pth", map_location=device))
+model.eval()
+print("✅ O-HAZE trained model loaded successfully.")
 
-try:
-    checkpoint = torch.load(os.getenv("MODEL_PATH", "crowd_vision_model.pth"), map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    print(f"✓ Model loaded successfully on {device}")
-except Exception as e:
-    print(f"Error loading model: {e}")
-
-# =====================================================================
-# IMAGE PREPROCESSING
-# =====================================================================
-
+# =========================================================
+# IMAGE TRANSFORM (MUST MATCH TRAINING TRANSFORMS)
+# =========================================================
 transform = transforms.Compose([
-    transforms.Resize((128, 128)),
+    transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
 ])
 
-# =====================================================================
-# HELPER FUNCTIONS
-# =====================================================================
-def detect_warm_tone(image_array):
-    hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
-    avg_hue = np.mean(hsv[:, :, 0])
-    avg_saturation = np.mean(hsv[:, :, 1])
-    
-    # Detect orange/yellow tone dominance
-    if 15 < avg_hue < 40 and avg_saturation > 80:
-        return True  # warm/hazy tone detected
-    return False
+# =========================================================
+# VISIBILITY SCORE HELPERS
+# =========================================================
+def calculate_visibility_score(image):
+    image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
 
-def calculate_visibility_score(image_array):
-    gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
     contrast = gray.std()
-    edges = cv2.Canny(gray, 50, 150)
+    edges = cv2.Canny(gray, 100, 200)
     edge_density = np.sum(edges > 0) / edges.size
     brightness = np.mean(gray)
-    
-    # Visibility calibration
-    raw_score = (contrast * 1.1 + edge_density * 180 + (brightness - 110) * 0.12)
 
-    visibility_score = max(0, min(100, raw_score))
-    
+    visibility_score = (contrast * 0.4) + (edge_density * 4000 * 0.4) + (brightness * 0.2)
+    visibility_score = np.clip(visibility_score, 0, 100)
+
     return visibility_score, contrast, edge_density, brightness
 
-
-# =====================================================================
-# API ENDPOINTS
-# =====================================================================
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'model_loaded': model is not None,
-        'device': str(device),
-        'timestamp': datetime.utcnow().isoformat()
-    })
-
+# =========================================================
+# PREDICT ENDPOINT
+# =========================================================
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        import base64  # make sure base64 is available
-        # Case 1 — user uploaded a file
-        if 'image' in request.files:
-            image_file = request.files['image']
-            image = Image.open(image_file).convert('RGB')
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'error': 'No image provided'}), 400
 
-        # Case 2 — frontend sends base64 JSON
-        elif request.is_json:
-            data = request.get_json(silent=True, force=True)
-            if 'image_base64' in data:
-                image_data = base64.b64decode(data['image_base64'])
-                image = Image.open(io.BytesIO(image_data)).convert('RGB')
-            else:
-                return jsonify({'error': 'Missing image_base64 field'}), 400
-        else:
-            return jsonify({'error': 'No image provided'}), 400
+        image_file = request.files['image']
+        image = Image.open(io.BytesIO(image_file.read())).convert('RGB')
 
-        # Convert image → numpy
-        image_array = np.array(image)
+        visibility_score, contrast, edge_density, brightness = calculate_visibility_score(image)
 
-        # Calculate metrics
-        visibility_score, contrast, edge_density, brightness = calculate_visibility_score(image_array)
-
-        # Prepare tensor for model
-        image_tensor = transform(image).unsqueeze(0).to(device)
-
+        img_tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
-            outputs = model(image_tensor)
-            probabilities = torch.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probabilities, 1)
+            outputs = model(img_tensor)
+            probs = torch.softmax(outputs, dim=1)
+            confidence, predicted = torch.max(probs, 1)
 
-        label_map = {0: 'clear', 1: 'hazy'}
+        label_map = {0: "clear", 1: "hazy"}
         prediction = label_map[predicted.item()]
-        confidence = round(confidence.item() * 100, 2)
+        confidence_value = round(confidence.item() * 100, 2)
 
-        # --- Warm tone detection ---
-        hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
-        mean_hue = np.mean(hsv[:, :, 0])
-        warm_tone = mean_hue < 30 or mean_hue > 160  # yellow-red regions
+        # Handle uncertainty region
+        if confidence_value < 60:
+            prediction = "uncertain"
 
-        # --- Smart Correction Layer ---
-        if visibility_score > 70 and contrast < 40 and edge_density < 0.05:
-            prediction = "hazy"
-            confidence = min(confidence + 10, 90)
-        elif warm_tone and visibility_score < 85:
-            prediction = "hazy"
-            confidence = min(confidence + 15, 95)
-        elif prediction == "hazy" and 60 < visibility_score < 90 and 90 < brightness < 160:
-            prediction = "clear"
-            confidence = min(confidence + 10, 95)
-        elif brightness > 190 and contrast < 30:
-            prediction = "hazy"
-            confidence = min(confidence, 85)
-
-        # --- Visibility calibration tweak ---
-        visibility_score = min(100, max(0, (contrast * 1.3 + edge_density * 220 + (brightness - 120) * 0.1)))
-
-        return jsonify({
-            'success': True,
-            'prediction': prediction,
-            'confidence': confidence,
-            'visibility_score': round(visibility_score, 2),
-            'metrics': {
-                'contrast': round(contrast, 2),
-                'edge_density': round(edge_density * 100, 2),
-                'brightness': round(brightness, 2),
-                'warm_tone': float(mean_hue)
+        response = {
+            "success": True,
+            "prediction": prediction,
+            "confidence": confidence_value,
+            "visibility_score": round(visibility_score, 2),
+            "metrics": {
+                "contrast": round(contrast, 2),
+                "edge_density": round(edge_density * 100, 2),
+                "brightness": round(brightness, 2)
             },
-            'timestamp': datetime.utcnow().isoformat()
-        })
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        return jsonify(response)
 
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/')
 def home():
     return jsonify({
         'message': 'CrowdVision Haze Detection API is running!',
-        'endpoints': {'/predict': 'POST (image upload)', '/health': 'GET'},
         'status': 'active'
     })
 
-# =====================================================================
-# RUN FLASK APP
-# =====================================================================
+
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
+
 
 
 
