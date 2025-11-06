@@ -42,7 +42,7 @@ class CrowdVisionModel(nn.Module):
 # LOAD TRAINED WEIGHTS
 # =========================================================
 model = CrowdVisionModel(num_classes=2).to(device)
-model.load_state_dict(torch.load("crowdvision_final_ohaze.pth", map_location=device))
+model.load_state_dict(torch.load("crowd_vision_model.pth", map_location=device))
 model.eval()
 print("✅ O-HAZE trained model loaded successfully.")
 
@@ -131,6 +131,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
