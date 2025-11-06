@@ -31,11 +31,12 @@ class CrowdVisionModel(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(in_features, 256),
             nn.ReLU(),
-            nn.Linear(256, num_classes)  
+            nn.Linear(256, num_classes)
         )
 
     def forward(self, x):
         return self.backbone(x)
+
 
 
 # =========================================================
@@ -54,10 +55,14 @@ if not os.path.exists(MODEL_PATH):
 else:
     print("✓ Model already exists, skipping download.")
 
+device = torch.device("cpu")
+
 model = CrowdVisionModel(num_classes=2).to(device)
-model.load_state_dict(torch.load("crowd_vision_model.pth", map_location=device))
+model.load_state_dict(torch.load("crowdvision_final_ohaze.pth", map_location=device))
 model.eval()
-print("✅ O-HAZE trained model loaded successfully.")
+
+print("✅ Model loaded successfully")
+
 
 # =========================================================
 # IMAGE TRANSFORM (MUST MATCH TRAINING TRANSFORMS)
@@ -144,6 +149,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
