@@ -1,3 +1,7 @@
+opencv-python-headless
+Pillow
+gunicorn
+numpy
 Flask
 flask-cors
 gdown
@@ -5,10 +9,7 @@ torch==2.0.1+cpu
 torchvision==0.15.2+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-opencv-python-headless
-Pillow
-gunicorn
-numpy
+
 
 
 
