@@ -43,10 +43,9 @@ else:
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
         super(CrowdVisionModel, self).__init__()
-        self.backbone = models.efficientnet_b0(weights=None) 
+        self.backbone = models.efficientnet_b0(weights=None)  
         in_features = self.backbone.classifier[1].in_features
 
-  
         self.backbone.classifier = nn.Sequential(
             nn.Dropout(0.3),
             nn.Linear(in_features, 256),
@@ -54,7 +53,7 @@ class CrowdVisionModel(nn.Module):
             nn.Linear(256, num_classes)
         )
 
-       
+     
         for param in self.backbone.parameters():
             param.requires_grad = False
 
@@ -67,8 +66,10 @@ class CrowdVisionModel(nn.Module):
 
 
 
+
 model = CrowdVisionModel(num_classes=2).to(device)
-model.load_state_dict(torch.load("crowd_vision_model.pth", map_location=device))
+model.load_state_dict(torch.load(MODEL_PATH, map_location=device), strict=False)
+
 model.eval()
 
 
@@ -158,6 +159,7 @@ def home():
 # ===============================================================
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
