@@ -50,12 +50,12 @@ class CrowdVisionModel(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(in_features, 256),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, num_classes)   
+            nn.Linear(256, num_classes)  
         )
 
     def forward(self, x):
         return self.backbone(x)
+
 
 
 
@@ -152,6 +152,7 @@ def home():
 # ===============================================================
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
