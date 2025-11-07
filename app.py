@@ -46,6 +46,7 @@ class CrowdVisionModel(nn.Module):
         self.backbone = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
         in_features = self.backbone.classifier[1].in_features
 
+      
         self.backbone.classifier = nn.Sequential(
             nn.Dropout(0.3),
             nn.Linear(in_features, 256),
@@ -56,6 +57,7 @@ class CrowdVisionModel(nn.Module):
 
     def forward(self, x):
         return self.backbone(x)
+
 
 
 
@@ -149,4 +151,5 @@ def home():
 # ===============================================================
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
