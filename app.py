@@ -81,15 +81,29 @@ def calculate_visibility_score(image):
     image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
 
+    # Dark Channel Prior (strong haze indicator)
+    dark_channel = cv2.erode(np.min(image_cv, axis=2),
+                             cv2.getStructuringElement(cv2.MORPH_RECT, (15,15)))
+    haze_strength = np.mean(dark_channel)  # higher = more haze
+
+    # Contrast (lower in haze)
     contrast = gray.std()
+
+    # Edge density (lower in haze)
     edges = cv2.Canny(gray, 100, 200)
     edge_density = np.sum(edges > 0) / edges.size
-    brightness = np.mean(gray)
 
-    visibility_score = (contrast * 0.4) + (edge_density * 4000 * 0.4) + (brightness * 0.2)
-    visibility_score = np.clip(visibility_score, 0, 100)
+    # Convert into a final readable 0–100 score
+    score = (
+        (contrast * 0.7) +         # clarity
+        (edge_density * 120) -     # sharpness factor
+        (haze_strength * 0.05)     # haze reduction factor
+    )
 
-    return visibility_score, contrast, edge_density, brightness
+    visibility_score = np.clip(score, 0, 100)
+
+    return visibility_score, contrast, edge_density, haze_strength
+
 
 # =========================================================
 # PREDICT ENDPOINT
@@ -115,9 +129,7 @@ def predict():
         prediction = label_map[predicted.item()]
         confidence_value = round(confidence.item() * 100, 2)
 
-        # Handle uncertainty region
-        if confidence_value < 60:
-            prediction = "uncertain"
+    
 
         response = {
             "success": True,
@@ -127,7 +139,8 @@ def predict():
             "metrics": {
                 "contrast": round(contrast, 2),
                 "edge_density": round(edge_density * 100, 2),
-                "brightness": round(brightness, 2)
+                "haze_strength": round(haze_strength, 2)
+
             },
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -149,6 +162,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
