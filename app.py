@@ -32,7 +32,8 @@ DRIVE_FILE_ID = "1PLoMmldxg7QZKONrb29CVKtqB9_kZjac"
 
 if not os.path.exists(MODEL_PATH):
     print("📥 Downloading model from Google Drive...")
-    gdown.download(f"https://drive.google.com/uc?id={DRIVE_FILE_ID}", MODEL_PATH, quiet=False)
+    gdown.download(f"https://drive.google.com/uc?export=download&id={DRIVE_FILE_ID}", MODEL_PATH, quiet=False, fuzzy=True)
+
 else:
     print("✅ Model file already present, skipping download.")
 
@@ -165,6 +166,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
