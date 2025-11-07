@@ -117,7 +117,7 @@ def predict():
         image_file = request.files['image']
         image = Image.open(io.BytesIO(image_file.read())).convert('RGB')
 
-        visibility_score, contrast, edge_density, brightness = calculate_visibility_score(image)
+        visibility_score, contrast, edge_density,  haze_strength = calculate_visibility_score(image)
 
         img_tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
@@ -162,6 +162,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
