@@ -1,27 +1,26 @@
 import os
 import io
+import base64
 import torch
-import torch.nn as nn
 import numpy as np
+from PIL import Image
 import cv2
 from datetime import datetime
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from torchvision import models, transforms
-from PIL import Image
 
-# =========================================================
-# FLASK SETUP
-# =========================================================
+import torch.nn as nn
+from torchvision import models, transforms
+
 app = Flask(__name__)
 CORS(app)
 
 device = torch.device("cpu")
-torch.set_num_threads(1)
 
-# =========================================================
-# MODEL ARCHITECTURE (must match training)
-# =========================================================
+# ==========================================================
+# MODEL DEFINITION (must match training)
+# ==========================================================
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
         super(CrowdVisionModel, self).__init__()
@@ -31,157 +30,143 @@ class CrowdVisionModel(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(in_features, 256),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(256, num_classes)
         )
 
     def forward(self, x):
         return self.backbone(x)
 
+# ==========================================================
+# LOAD MODEL
+# ==========================================================
+model_path = "crowdvision_final_ohaze.pth"
 
-
-# =========================================================
-# LOAD TRAINED WEIGHTS
-# =========================================================
-import gdown
-
-MODEL_PATH = "crowd_vision_model.pth"
-FILE_ID = "1PLoMmldxg7QZKONrb29CVKtqB9_kZjac"
-
-if not os.path.exists(MODEL_PATH):
-    print("📥 Downloading model from Google Drive...")
-    url = f"https://drive.google.com/uc?id={FILE_ID}"
-    gdown.download(url, MODEL_PATH, quiet=False)
-    print("✅ Model downloaded successfully!")
-else:
-    print("✓ Model already exists, skipping download.")
-
-device = torch.device("cpu")
-
-model = CrowdVisionModel(num_classes=2).to(device)
-model.load_state_dict(torch.load("crowd_vision_model.pth", map_location=device))
+model = CrowdVisionModel().to(device)
+model.load_state_dict(torch.load(model_path, map_location=device), strict=True)
 model.eval()
 
 print("✅ Model loaded successfully")
 
 
-# =========================================================
-# IMAGE TRANSFORM (MUST MATCH TRAINING TRANSFORMS)
-# =========================================================
+# ==========================================================
+# TRANSFORM (must match training)
+# ==========================================================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225])
 ])
 
-# =========================================================
-# VISIBILITY SCORE HELPERS
-# =========================================================
+
+# ==========================================================
+# VISIBILITY CALC
+# ==========================================================
 def calculate_visibility_score(image):
-    image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-   
-    dark_channel = cv2.erode(np.min(image_cv, axis=2),
-                             cv2.getStructuringElement(cv2.MORPH_RECT, (15,15)))
-    haze_strength = np.mean(dark_channel) 
-
-    
     contrast = gray.std()
-
-  
-    edges = cv2.Canny(gray, 100, 200)
+    brightness = np.mean(gray)
+    edges = cv2.Canny(gray, 80, 180)
     edge_density = np.sum(edges > 0) / edges.size
 
-    
-    score = (
-        (contrast * 0.7) +         
-        (edge_density * 120) -    
-        (haze_strength * 0.05)   
-    )
+    score = (contrast * 0.4) + (edge_density * 3200 * 0.4) + (brightness * 0.2)
+    score = np.clip(score, 0, 100)
 
-    visibility_score = np.clip(score, 0, 100)
-
-    return visibility_score, contrast, edge_density, haze_strength
+    return score, contrast, edge_density, brightness
 
 
-# =========================================================
-# PREDICT ENDPOINT
-# =========================================================
-@app.route('/predict', methods=['POST'])
+# ==========================================================
+# PREDICTION ROUTE
+# ==========================================================
+@app.route("/predict", methods=["POST"])
 def predict():
+
     try:
-        if 'image' not in request.files:
-            return jsonify({'success': False, 'error': 'No image provided'}), 400
+        # Accept Base64 OR File Upload
+        if "image" in request.files:
+            image = Image.open(request.files["image"].stream).convert("RGB")
+        else:
+            data = request.get_json()
+            img_data = base64.b64decode(data["image_base64"])
+            image = Image.open(io.BytesIO(img_data)).convert("RGB")
 
-        image_file = request.files['image']
-        image = Image.open(io.BytesIO(image_file.read())).convert('RGB')
+        # Visibility Metrics
+        visibility_score, contrast, edge_density, brightness = calculate_visibility_score(image)
 
-        visibility_score, contrast, edge_density,  haze_strength = calculate_visibility_score(image)
-
+        # Model Prediction
         img_tensor = transform(image).unsqueeze(0).to(device)
+
         with torch.no_grad():
-            outputs = model(img_tensor)
-            probs = torch.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probs, 1)
-
-        label_map = {0: "clear", 1: "hazy"}
-        prediction = label_map[predicted.item()]
-        
-
-       
-        image_np = np.array(image)
-        b, g, r = np.mean(image_np[:,:,2]), np.mean(image_np[:,:,1]), np.mean(image_np[:,:,0])
-        
-        blue_dominant = (b > g + 20) and (b > r + 20) 
-        white_clouds_present = np.mean(image_np) > 180  
-        
-        if blue_dominant and white_clouds_present:
-            # override to clear, because it's obviously sky
-            prediction = "clear"
-            visibility_score = min(100, visibility_score + 25) 
-            confidence_value = max(confidence_value, 85)      
+            out = model(img_tensor)
+            probs = torch.softmax(out, dim=1)
+            confidence, pred = torch.max(probs, 1)
 
         confidence_value = round(confidence.item() * 100, 2)
+        label_map = {0: "clear", 1: "hazy"}
+        prediction = label_map[pred.item()]
 
-        
+        # ======================================================
+        # SKY + CLOUD CORRECTION (fix misclassification on blue sky)
+        # ======================================================
+        img_np = np.array(image)
+        avg_r = np.mean(img_np[:, :, 0])
+        avg_g = np.mean(img_np[:, :, 1])
+        avg_b = np.mean(img_np[:, :, 2])
+
+        blue_dominant = (avg_b > avg_g + 15) and (avg_b > avg_r + 15)
+        white_clouds_present = np.mean(img_np) > 180
+
+        if blue_dominant and white_clouds_present:
+            prediction = "clear"
+            visibility_score = min(100, visibility_score + 25)
+            confidence_value = max(confidence_value, 85)
+
+        # ======================================================
+        # VISIBILITY CALIBRATION
+        # ======================================================
         if prediction == "clear":
             visibility_score = min(100, visibility_score * 1.3)
         else:
             visibility_score = max(0, visibility_score * 0.8)
 
+        visibility_score = round(float(visibility_score), 2)
 
-        response = {
+        # ======================================================
+        # RESPONSE
+        # ======================================================
+        return jsonify({
             "success": True,
             "prediction": prediction,
             "confidence": confidence_value,
-            "visibility_score": round(visibility_score, 2),
+            "visibility_score": visibility_score,
             "metrics": {
-                "contrast": round(contrast, 2),
-                "edge_density": round(edge_density * 100, 2),
-                "haze_strength": round(haze_strength, 2)
-
+                "contrast": round(float(contrast), 2),
+                "edge_density": round(float(edge_density * 100), 2),
+                "brightness": round(float(brightness), 2)
             },
             "timestamp": datetime.utcnow().isoformat()
-        }
-
-        return jsonify(response)
+        })
 
     except Exception as e:
+        print("ERROR:", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/')
+@app.route("/")
 def home():
     return jsonify({
-        'message': 'CrowdVision Haze Detection API is running!',
-        'status': 'active'
+        "message": "🌤️ HazeRadar API is running!",
+        "predict": "/predict (POST)"
     })
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
+
+
 
 
 
