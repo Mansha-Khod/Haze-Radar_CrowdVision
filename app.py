@@ -144,7 +144,12 @@ def predict():
 
         confidence_value = round(confidence.item() * 100, 2)
 
-    
+        
+        if prediction == "clear":
+            visibility_score = min(100, visibility_score * 1.3)
+        else:
+            visibility_score = max(0, visibility_score * 0.8)
+
 
         response = {
             "success": True,
@@ -177,6 +182,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
