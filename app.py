@@ -40,7 +40,7 @@ class CrowdVisionModel(nn.Module):
 # ==========================================================
 # LOAD MODEL
 # ==========================================================
-model_path = "crowdvision_final_ohaze.pth"
+model_path = "crowd_vision_model.pth"
 
 model = CrowdVisionModel().to(device)
 model.load_state_dict(torch.load(model_path, map_location=device), strict=True)
@@ -165,6 +165,7 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
 
 
