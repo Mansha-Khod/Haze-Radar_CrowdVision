@@ -27,15 +27,19 @@ device = torch.device("cpu")
 # ===============================================================
 # Download Model from Google Drive if NOT already present
 # ===============================================================
+
+
+import gdown
+
 MODEL_PATH = "crowd_vision_model.pth"
 DRIVE_FILE_ID = "1PLoMmldxg7QZKONrb29CVKtqB9_kZjac"
 
 if not os.path.exists(MODEL_PATH):
-    print("📥 Downloading model from Google Drive...")
-    gdown.download(f"https://drive.google.com/uc?export=download&id={DRIVE_FILE_ID}", MODEL_PATH, quiet=False, fuzzy=True)
-
+    print("📥 Downloading model from Google Drive (direct mode)...")
+    gdown.download(id=DRIVE_FILE_ID, output=MODEL_PATH, quiet=False)
 else:
-    print("✅ Model file already present, skipping download.")
+    print("✅ Model already present.")
+
 
 
 # ===============================================================
@@ -166,6 +170,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
