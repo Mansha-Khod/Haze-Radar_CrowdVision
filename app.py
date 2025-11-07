@@ -81,23 +81,23 @@ def calculate_visibility_score(image):
     image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
 
-    # Dark Channel Prior (strong haze indicator)
+   
     dark_channel = cv2.erode(np.min(image_cv, axis=2),
                              cv2.getStructuringElement(cv2.MORPH_RECT, (15,15)))
-    haze_strength = np.mean(dark_channel)  # higher = more haze
+    haze_strength = np.mean(dark_channel) 
 
-    # Contrast (lower in haze)
+    
     contrast = gray.std()
 
-    # Edge density (lower in haze)
+  
     edges = cv2.Canny(gray, 100, 200)
     edge_density = np.sum(edges > 0) / edges.size
 
-    # Convert into a final readable 0–100 score
+    
     score = (
-        (contrast * 0.7) +         # clarity
-        (edge_density * 120) -     # sharpness factor
-        (haze_strength * 0.05)     # haze reduction factor
+        (contrast * 0.7) +         
+        (edge_density * 120) -    
+        (haze_strength * 0.05)   
     )
 
     visibility_score = np.clip(score, 0, 100)
@@ -127,6 +127,21 @@ def predict():
 
         label_map = {0: "clear", 1: "hazy"}
         prediction = label_map[predicted.item()]
+        
+
+       
+        image_np = np.array(image)
+        b, g, r = np.mean(image_np[:,:,2]), np.mean(image_np[:,:,1]), np.mean(image_np[:,:,0])
+        
+        blue_dominant = (b > g + 20) and (b > r + 20) 
+        white_clouds_present = np.mean(image_np) > 180  
+        
+        if blue_dominant and white_clouds_present:
+            # override to clear, because it's obviously sky
+            prediction = "clear"
+            visibility_score = min(100, visibility_score + 25) 
+            confidence_value = max(confidence_value, 85)      
+
         confidence_value = round(confidence.item() * 100, 2)
 
     
@@ -162,6 +177,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
