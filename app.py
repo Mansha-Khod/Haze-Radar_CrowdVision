@@ -45,12 +45,16 @@ else:
 # ===============================================================
 # Model Architecture (Matches Training Exactly)
 # ===============================================================
+# ===============================================================
+# Model Architecture (Matches Training Exactly)
+# ===============================================================
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
         super(CrowdVisionModel, self).__init__()
-        # Do NOT load pretrained weights
+       
         self.backbone = models.efficientnet_b0(weights=None)
 
+       
         in_features = self.backbone.classifier[1].in_features
 
         self.backbone.classifier = nn.Sequential(
@@ -63,11 +67,12 @@ class CrowdVisionModel(nn.Module):
 
     def forward(self, x):
         return self.backbone(x)
-)
+
 
 model = CrowdVisionModel(num_classes=2).to(device)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device), strict=False)
 model.eval()
+
 print(" Model loaded successfully!")
 
 # ===============================================================
@@ -154,6 +159,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
