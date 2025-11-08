@@ -18,7 +18,7 @@ device = torch.device("cpu")
 # Download Model
 # ===============================================================
 MODEL_PATH = "crowd_vision_model.pth"
-DRIVE_FILE_ID = "1oP7BfyzGLU83KbIzOlmuQM8qBVW6XheT"
+DRIVE_FILE_ID = "1xHANfp97CnoYO5tumttbGxGUsOH8xeti"
 
 if os.path.exists(MODEL_PATH):
     os.remove(MODEL_PATH)  # Force fresh download
@@ -146,3 +146,4 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
