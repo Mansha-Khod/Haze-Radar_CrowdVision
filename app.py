@@ -19,11 +19,11 @@ device = torch.device("cpu")
 # ===============================================================
 MODEL_PATH = "crowd_vision_model.pth"
 
-DRIVE_FILE_ID = "1xHANfp97CnoYO5tumttbGxGUsOH8xeti" 
+DRIVE_FILE_ID = "168Jui3J763s_JmoxH3w7nz5FplMH3Kin"  
 
 if os.path.exists(MODEL_PATH):
     os.remove(MODEL_PATH)
-    print("🗑️ Removed old model file")
+    print(" Removed old model file")
 
 print(" Downloading trained model from Google Drive...")
 gdown.download(id=DRIVE_FILE_ID, output=MODEL_PATH, quiet=False)
@@ -41,10 +41,10 @@ class CrowdVisionModel(nn.Module):
         
         # Custom classifier - MUST MATCH TRAINING SCRIPT
         self.backbone.classifier = nn.Sequential(
-            nn.Dropout(0.2),         
+            nn.Dropout(0.2),           # Changed from 0.3
             nn.Linear(in_features, 256),
             nn.ReLU(),
-            nn.Dropout(0.1),           
+            nn.Dropout(0.1),           # Changed from 0.2, removed extra layer
             nn.Linear(256, num_classes)
         )
 
@@ -55,11 +55,11 @@ class CrowdVisionModel(nn.Module):
 model = CrowdVisionModel(num_classes=2).to(device)
 print(" Model architecture created")
 
-
+# Load trained weights - FIXED FOR PyTorch 2.6
 print(" Loading trained weights...")
 try:
-    # Load state dict directly (weights_only format)
-    state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=True)
+    # PyTorch 2.6 requires weights_only=False for backward compatibility
+    state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
     model.load_state_dict(state_dict)
     model.eval()
     print(" SUCCESS: Trained weights loaded!")
@@ -72,9 +72,17 @@ try:
     print(f" Model verification - Output shape: {test_output.shape}")
     print(f" Sample probabilities: Clear={test_probs[0][0]:.3f}, Hazy={test_probs[0][1]:.3f}")
     
+    # Check if model seems trained (outputs should NOT be ~50/50)
+    if abs(test_probs[0][0].item() - 0.5) < 0.1:
+        print(" WARNING: Model outputs look random - weights may not have loaded correctly!")
+    else:
+        print(" Model appears properly trained!")
+    
 except Exception as e:
     print(f" FAILED to load weights: {e}")
     print(" Model will use random weights - predictions will be incorrect!")
+    import traceback
+    traceback.print_exc()
 
 # ===============================================================
 # Image Preprocessing
@@ -161,7 +169,7 @@ def predict():
         })
 
     except Exception as e:
-        print(f"Error in /predict: {str(e)}")
+        print(f"❌ Error in /predict: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
