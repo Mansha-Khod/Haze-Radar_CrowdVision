@@ -48,43 +48,27 @@ else:
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
         super(CrowdVisionModel, self).__init__()
-        from torchvision.models import EfficientNet_B0_Weights
-        
-      
-        self.backbone = models.efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+        # Do NOT load pretrained weights
+        self.backbone = models.efficientnet_b0(weights=None)
+
         in_features = self.backbone.classifier[1].in_features
 
-        
         self.backbone.classifier = nn.Sequential(
             nn.Dropout(0.3),
             nn.Linear(in_features, 256),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(256, num_classes)
         )
 
-      
-        for param in self.backbone.features.parameters():
-            param.requires_grad = False
-
     def forward(self, x):
         return self.backbone(x)
-
-
-
-
-
-
-
-
+)
 
 model = CrowdVisionModel(num_classes=2).to(device)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device), strict=False)
-
 model.eval()
-
-
-print("✅ Model loaded successfully!")
-
+print(" Model loaded successfully!")
 
 # ===============================================================
 # Image Preprocessing
@@ -170,6 +154,7 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
