@@ -15,7 +15,7 @@ CORS(app)
 device = torch.device("cpu")
 
 # ===============================================================
-# Download Model - UPDATE THIS FILE ID!
+# Download Model 
 # ===============================================================
 MODEL_PATH = "crowd_vision_model.pth"
 
@@ -23,64 +23,64 @@ DRIVE_FILE_ID = "168Jui3J763s_JmoxH3w7nz5FplMH3Kin"
 
 if os.path.exists(MODEL_PATH):
     os.remove(MODEL_PATH)
-    print(" Removed old model file")
+    print("🗑️ Removed old model file")
 
-print(" Downloading trained model from Google Drive...")
+print("Downloading trained model from Google Drive...")
 gdown.download(id=DRIVE_FILE_ID, output=MODEL_PATH, quiet=False)
-print(" Model downloaded successfully!")
+print("Model downloaded successfully!")
 
 # ===============================================================
-# Model Architecture - UPDATED TO MATCH TRAINING
+# Model Architecture
 # ===============================================================
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
         super(CrowdVisionModel, self).__init__()
-        # Load pretrained EfficientNet-B0 backbone
+        
         self.backbone = models.efficientnet_b0(weights='DEFAULT')
         in_features = self.backbone.classifier[1].in_features
         
-        # Custom classifier - MUST MATCH TRAINING SCRIPT
+        
         self.backbone.classifier = nn.Sequential(
-            nn.Dropout(0.2),           # Changed from 0.3
+            nn.Dropout(0.2),           
             nn.Linear(in_features, 256),
             nn.ReLU(),
-            nn.Dropout(0.1),           # Changed from 0.2, removed extra layer
+            nn.Dropout(0.1),           
             nn.Linear(256, num_classes)
         )
 
     def forward(self, x):
         return self.backbone(x)
 
-# Initialize model
-model = CrowdVisionModel(num_classes=2).to(device)
-print(" Model architecture created")
 
-# Load trained weights - FIXED FOR PyTorch 2.6
-print(" Loading trained weights...")
+model = CrowdVisionModel(num_classes=2).to(device)
+print("Model architecture created")
+
+
+print("Loading trained weights...")
 try:
-    # PyTorch 2.6 requires weights_only=False for backward compatibility
+    
     state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
     model.load_state_dict(state_dict)
     model.eval()
-    print(" SUCCESS: Trained weights loaded!")
+    print("SUCCESS: Trained weights loaded!")
     
-    # Verify model is working
+    
     dummy_input = torch.randn(1, 3, 224, 224).to(device)
     with torch.no_grad():
         test_output = model(dummy_input)
         test_probs = torch.softmax(test_output, dim=1)
     print(f" Model verification - Output shape: {test_output.shape}")
-    print(f" Sample probabilities: Clear={test_probs[0][0]:.3f}, Hazy={test_probs[0][1]:.3f}")
+    print(f"Sample probabilities: Clear={test_probs[0][0]:.3f}, Hazy={test_probs[0][1]:.3f}")
     
-    # Check if model seems trained (outputs should NOT be ~50/50)
+    
     if abs(test_probs[0][0].item() - 0.5) < 0.1:
-        print(" WARNING: Model outputs look random - weights may not have loaded correctly!")
+        print("WARNING: Model outputs look random - weights may not have loaded correctly!")
     else:
-        print(" Model appears properly trained!")
+        print("Model appears properly trained!")
     
 except Exception as e:
     print(f" FAILED to load weights: {e}")
-    print(" Model will use random weights - predictions will be incorrect!")
+    print("Model will use random weights - predictions will be incorrect!")
     import traceback
     traceback.print_exc()
 
@@ -113,6 +113,26 @@ def calculate_visibility_score(image):
 
     return visibility, contrast, edge_density, brightness
 
+def has_distinct_clouds(image):
+    """Detect if image has blue sky with distinct white clouds"""
+    try:
+        
+        hsv_image = image.convert('HSV')
+        hsv_array = np.array(hsv_image)
+        
+        h, s, v = hsv_array[:,:,0], hsv_array[:,:,1], hsv_array[:,:,2]
+        
+        blue_mask = (h > 80) & (h < 140) & (s > 30) & (v > 50)
+        blue_ratio = np.sum(blue_mask) / blue_mask.size
+        
+        white_mask = (v > 200) & (s < 50)
+        white_ratio = np.sum(white_mask) / white_mask.size
+        
+        
+        return blue_ratio > 0.25 and white_ratio > 0.08
+    except:
+        return False
+
 # ===============================================================
 # Predict Endpoint
 # ===============================================================
@@ -125,13 +145,13 @@ def predict():
         image_file = request.files['image']
         image = Image.open(io.BytesIO(image_file.read())).convert('RGB')
         
-        # Calculate visibility metrics
+        
         vis_score, contrast, edges, brightness = calculate_visibility_score(image)
         
-        # Prepare image for model
+        
         img_tensor = transform(image).unsqueeze(0).to(device)
         
-        # Get prediction
+        
         with torch.no_grad():
             outputs = model(img_tensor)
             probs = torch.softmax(outputs, dim=1)
@@ -140,17 +160,29 @@ def predict():
         clear_prob = float(probs[0][0].item())
         hazy_prob = float(probs[0][1].item())
         
-        # Debug logging
-        print(f"🔍 Prediction - Clear: {clear_prob*100:.2f}% | Hazy: {hazy_prob*100:.2f}%")
-        print(f"🔍 Raw outputs: {outputs.cpu().numpy()}")
-        
         label_map = {0: "clear", 1: "hazy"}
         prediction = label_map[predicted.item()]
         confidence_value = float(confidence.item() * 100)
         
-        # Apply confidence threshold
-        if confidence_value < 60:
+       
+        print(f" Model Prediction - Clear: {clear_prob*100:.2f}% | Hazy: {hazy_prob*100:.2f}%")
+        print(f"Raw outputs: {outputs.cpu().numpy()}")
+        print(f"Visibility Score: {vis_score:.2f}")
+        
+        # SPECIAL CASE: Blue sky with white clouds (often misclassified as hazy)
+        if prediction == "hazy" and has_distinct_clouds(image):
+            if vis_score > 65:  # High visibility suggests clear conditions
+                print(" OVERRIDE: Detected blue sky with clouds → Changing to 'clear'")
+                prediction = "clear"
+                # Adjust confidence since we're overriding
+                confidence_value = min(confidence_value * 0.85, 88.0)
+                clear_prob, hazy_prob = hazy_prob, clear_prob  # Swap probabilities
+        
+        # Apply general confidence threshold
+        elif confidence_value < 60:
             prediction = "uncertain"
+        
+        print(f" Final Prediction: {prediction} ({confidence_value:.2f}%)")
         
         return jsonify({
             "success": True,
@@ -169,7 +201,7 @@ def predict():
         })
 
     except Exception as e:
-        print(f"❌ Error in /predict: {str(e)}")
+        print(f" Error in /predict: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
