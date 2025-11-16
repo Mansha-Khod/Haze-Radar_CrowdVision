@@ -14,37 +14,30 @@ app = Flask(__name__)
 CORS(app)
 device = torch.device("cpu")
 
-# ===============================================================
-# Download Model - UPDATE THIS FILE ID!
-# ===============================================================
+# Download model
 MODEL_PATH = "crowd_vision_model.pth"
-
 DRIVE_FILE_ID = "168Jui3J763s_JmoxH3w7nz5FplMH3Kin" 
 
 if os.path.exists(MODEL_PATH):
     os.remove(MODEL_PATH)
     print("Removed old model file")
 
-print(" Downloading trained model from Google Drive...")
+print("Downloading model from Google Drive...")
 gdown.download(id=DRIVE_FILE_ID, output=MODEL_PATH, quiet=False)
-print("Model downloaded successfully!")
+print("Model downloaded!")
 
-# ===============================================================
-# Model Architecture - UPDATED TO MATCH TRAINING
-# ===============================================================
+# Model architecture
 class CrowdVisionModel(nn.Module):
     def __init__(self, num_classes=2):
-        super(CrowdVisionModel, self).__init__()
-        
+        super().__init__()
         self.backbone = models.efficientnet_b0(weights='DEFAULT')
         in_features = self.backbone.classifier[1].in_features
         
-       
         self.backbone.classifier = nn.Sequential(
-            nn.Dropout(0.2),          
+            nn.Dropout(0.2),
             nn.Linear(in_features, 256),
             nn.ReLU(),
-            nn.Dropout(0.1),           
+            nn.Dropout(0.1),
             nn.Linear(256, num_classes)
         )
 
@@ -52,52 +45,39 @@ class CrowdVisionModel(nn.Module):
         return self.backbone(x)
 
 model = CrowdVisionModel(num_classes=2).to(device)
-print(" Model architecture created")
 
-
-print(" Loading trained weights...")
+print("Loading trained weights...")
 try:
-    
     state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
     model.load_state_dict(state_dict)
     model.eval()
-    print("SUCCESS: Trained weights loaded!")
+    print("Model weights loaded successfully")
     
-    # Verify model is working
+    # Quick verification
     dummy_input = torch.randn(1, 3, 224, 224).to(device)
     with torch.no_grad():
         test_output = model(dummy_input)
         test_probs = torch.softmax(test_output, dim=1)
-    print(f"Model verification - Output shape: {test_output.shape}")
-    print(f"Sample probabilities: Clear={test_probs[0][0]:.3f}, Hazy={test_probs[0][1]:.3f}")
     
-    # Check if model seems trained (outputs should NOT be ~50/50)
+    print(f"Model test - Clear: {test_probs[0][0]:.3f}, Hazy: {test_probs[0][1]:.3f}")
+    
     if abs(test_probs[0][0].item() - 0.5) < 0.1:
-        print("WARNING: Model outputs look random - weights may not have loaded correctly!")
+        print("Warning: Model outputs appear random")
     else:
-        print("Model appears properly trained!")
-    
+        print("Model appears trained properly")
+        
 except Exception as e:
-    print(f"FAILED to load weights: {e}")
-    print("Model will use random weights - predictions will be incorrect!")
+    print(f"Failed to load weights: {e}")
     import traceback
     traceback.print_exc()
 
-# ===============================================================
-# Image Preprocessing
-# ===============================================================
+# Image preprocessing
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], 
-        std=[0.229, 0.224, 0.225]
-    )
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# ===============================================================
-# Visibility Calculation
-# ===============================================================
 def calculate_visibility_score(image):
     image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
@@ -113,11 +93,9 @@ def calculate_visibility_score(image):
     return visibility, contrast, edge_density, brightness
 
 def has_distinct_clouds(image):
-    """Detect if image has blue sky with distinct white clouds"""
+    """Detect blue sky with distinct white clouds to prevent false haze classification"""
     try:
-      
         img_array = np.array(image)
-        
         hsv_image = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
         h, s, v = hsv_image[:,:,0], hsv_image[:,:,1], hsv_image[:,:,2]
         
@@ -127,24 +105,19 @@ def has_distinct_clouds(image):
         white_mask = (v > 180) & (s < 70)
         white_ratio = np.sum(white_mask) / white_mask.size
         
-        
         avg_brightness = np.mean(v)
         
-        has_blue_sky = blue_ratio > 0.15  
-        has_clouds = white_ratio > 0.05   
-        is_bright = avg_brightness > 100  
+        has_blue_sky = blue_ratio > 0.15
+        has_clouds = white_ratio > 0.05
+        is_bright = avg_brightness > 100
         
-        print(f"Cloud Detection: Blue={blue_ratio:.2%}, White={white_ratio:.2%}, Brightness={avg_brightness:.1f}")
-        print(f" Checks: BlueSky={has_blue_sky}, Clouds={has_clouds}, Bright={is_bright}")
+        print(f"Cloud check - Blue: {blue_ratio:.2%}, White: {white_ratio:.2%}, Bright: {avg_brightness:.1f}")
         
         return has_blue_sky and has_clouds and is_bright
     except Exception as e:
         print(f"Cloud detection error: {e}")
         return False
 
-# ===============================================================
-# Predict Endpoint
-# ===============================================================
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
@@ -154,12 +127,9 @@ def predict():
         image_file = request.files['image']
         image = Image.open(io.BytesIO(image_file.read())).convert('RGB')
         
-        
         vis_score, contrast, edges, brightness = calculate_visibility_score(image)
         
-        
         img_tensor = transform(image).unsqueeze(0).to(device)
-        
         
         with torch.no_grad():
             outputs = model(img_tensor)
@@ -173,24 +143,21 @@ def predict():
         prediction = label_map[predicted.item()]
         confidence_value = float(confidence.item() * 100)
         
+        print(f"Model prediction - Clear: {clear_prob*100:.2f}%, Hazy: {hazy_prob*100:.2f}%")
+        print(f"Visibility score: {vis_score:.2f}")
         
-        print(f" Model Prediction - Clear: {clear_prob*100:.2f}% | Hazy: {hazy_prob*100:.2f}%")
-        print(f" Raw outputs: {outputs.cpu().numpy()}")
-        print(f" Visibility Score: {vis_score:.2f}")
-        
-        
+        # Critical: Cloud detection to prevent false haze classification
         if prediction == "hazy" and has_distinct_clouds(image):
-            if vis_score > 65:  
-                print(" OVERRIDE: Detected blue sky with clouds → Changing to 'clear'")
+            if vis_score > 65:
+                print("Override: Blue sky with clouds detected → Changing to 'clear'")
                 prediction = "clear"
-                
                 confidence_value = min(confidence_value * 0.85, 88.0)
-                clear_prob, hazy_prob = hazy_prob, clear_prob 
+                clear_prob, hazy_prob = hazy_prob, clear_prob
         
         elif confidence_value < 60:
             prediction = "uncertain"
         
-        print(f" Final Prediction: {prediction} ({confidence_value:.2f}%)")
+        print(f"Final prediction: {prediction} ({confidence_value:.2f}%)")
         
         return jsonify({
             "success": True,
@@ -209,7 +176,7 @@ def predict():
         })
 
     except Exception as e:
-        print(f" Error in /predict: {str(e)}")
+        print(f"Prediction error: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -218,7 +185,7 @@ def predict():
 def home():
     return {
         "status": "CrowdVision HazeRadar API Running",
-        "model": "Haze1K Trained - 100% Accuracy",
+        "model": "Haze1K Trained - 100% Accuracy", 
         "version": "2.0"
     }
 
@@ -226,9 +193,6 @@ def home():
 def health():
     return jsonify({"status": "healthy", "model_loaded": True})
 
-# ===============================================================
-# Run App
-# ===============================================================
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
