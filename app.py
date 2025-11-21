@@ -199,17 +199,35 @@ def predict():
                 confidence_value = min(75.0, confidence_value * 0.8)
                 clear_prob, hazy_prob = hazy_prob, clear_prob
                 
-        elif prediction == "hazy" and has_clouds and not has_haze:
-            # Only override to clear if we have distinct clouds AND no uniform haze
-            if vis_score > 65 and contrast > 35:
+        elif prediction == "hazy" and has_clouds:
+            # If we have distinct clouds and good visibility, override to clear
+            if not has_haze and (vis_score > 60 or contrast > 30):
                 print("Override: Blue sky with distinct clouds detected → Changing to 'clear'")
                 prediction = "clear"
-                confidence_value = min(confidence_value * 0.85, 88.0)
+                confidence_value = min(confidence_value * 0.90, 92.0)
                 clear_prob, hazy_prob = hazy_prob, clear_prob
         
-        # Uncertainty check
+        # Special case: Very high confidence hazy but obvious blue sky
+        elif prediction == "hazy" and confidence_value > 85:
+            if has_clouds and brightness > 150 and not has_haze:
+                print("Override: High-confidence but clear blue sky detected → Changing to 'clear'")
+                prediction = "clear"
+                confidence_value = 85.0
+                clear_prob, hazy_prob = hazy_prob, clear_prob
+        
+        # Handle uncertainty with visibility metrics
         if confidence_value < 60:
-            prediction = "uncertain"
+            # Use visibility metrics to make decision
+            if has_clouds or (vis_score > 70 and contrast > 30 and not has_haze):
+                print(f"Uncertain but clear indicators detected → Setting to 'clear' with confidence 65%")
+                prediction = "clear"
+                confidence_value = 65.0
+            elif has_haze or (contrast < 35 and vis_score < 50):
+                print(f"Uncertain but haze indicators detected → Setting to 'hazy' with confidence 65%")
+                prediction = "hazy"
+                confidence_value = 65.0
+            else:
+                prediction = "uncertain"
         
         print(f"Final prediction: {prediction} ({confidence_value:.2f}%)")
         
