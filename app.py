@@ -92,28 +92,63 @@ def calculate_visibility_score(image):
 
     return visibility, contrast, edge_density, brightness
 
-def has_distinct_clouds(image):
-    """Detect blue sky with distinct white clouds to prevent false haze classification"""
+def detect_atmospheric_haze(image):
+    """Detect uniform atmospheric haze/smog (grayish veil over scene)"""
     try:
         img_array = np.array(image)
         hsv_image = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
         h, s, v = hsv_image[:,:,0], hsv_image[:,:,1], hsv_image[:,:,2]
         
-        blue_mask = (h > 90) & (h < 130) & (s > 20) & (v > 40)
+        # Low saturation across image indicates haze/smog
+        avg_saturation = np.mean(s)
+        saturation_std = np.std(s)
+        
+        # Haze creates uniform desaturation
+        has_uniform_desaturation = avg_saturation < 80 and saturation_std < 35
+        
+        # Calculate color variance in the image
+        color_variance = np.std(img_array, axis=(0,1)).mean()
+        
+        print(f"Haze indicators - Avg Sat: {avg_saturation:.1f}, Sat Std: {saturation_std:.1f}, Color Var: {color_variance:.1f}")
+        
+        return has_uniform_desaturation and color_variance < 45
+        
+    except Exception as e:
+        print(f"Haze detection error: {e}")
+        return False
+
+def has_distinct_clouds(image):
+    """Detect blue sky with distinct white clouds (clear day with clouds)"""
+    try:
+        img_array = np.array(image)
+        hsv_image = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
+        h, s, v = hsv_image[:,:,0], hsv_image[:,:,1], hsv_image[:,:,2]
+        
+        # Blue sky detection - must have saturated blue
+        blue_mask = (h > 90) & (h < 130) & (s > 40) & (v > 80)  # Increased saturation threshold
         blue_ratio = np.sum(blue_mask) / blue_mask.size
         
-        white_mask = (v > 180) & (s < 70)
+        # White cloud detection - bright with low saturation
+        white_mask = (v > 200) & (s < 50)  # Stricter white cloud criteria
         white_ratio = np.sum(white_mask) / white_mask.size
         
-        avg_brightness = np.mean(v)
+        # Calculate saturation in "blue" regions
+        avg_saturation = np.mean(s)
         
-        has_blue_sky = blue_ratio > 0.15
-        has_clouds = white_ratio > 0.05
-        is_bright = avg_brightness > 100
+        # Check for distinct boundaries (clouds have edges)
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(gray, 100, 200)
+        edge_density = np.sum(edges > 0) / edges.size
         
-        print(f"Cloud check - Blue: {blue_ratio:.2%}, White: {white_ratio:.2%}, Bright: {avg_brightness:.1f}")
+        # True clouds: saturated blue sky + distinct white clouds + good edge definition
+        has_vibrant_blue = blue_ratio > 0.20 and avg_saturation > 60  # Need good saturation
+        has_clear_clouds = white_ratio > 0.08 and white_ratio < 0.40  # Not too much white
+        has_definition = edge_density > 0.05  # Good edge definition
         
-        return has_blue_sky and has_clouds and is_bright
+        print(f"Cloud check - Blue: {blue_ratio:.2%}, White: {white_ratio:.2%}, Sat: {avg_saturation:.1f}, Edges: {edge_density:.3f}")
+        
+        return has_vibrant_blue and has_clear_clouds and has_definition
+        
     except Exception as e:
         print(f"Cloud detection error: {e}")
         return False
@@ -144,17 +179,31 @@ def predict():
         confidence_value = float(confidence.item() * 100)
         
         print(f"Model prediction - Clear: {clear_prob*100:.2f}%, Hazy: {hazy_prob*100:.2f}%")
-        print(f"Visibility score: {vis_score:.2f}")
+        print(f"Visibility score: {vis_score:.2f}, Contrast: {contrast:.2f}")
         
-        # Critical: Cloud detection to prevent false haze classification
-        if prediction == "hazy" and has_distinct_clouds(image):
-            if vis_score > 65:
-                print("Override: Blue sky with clouds detected → Changing to 'clear'")
+        # Check for atmospheric haze first
+        has_haze = detect_atmospheric_haze(image)
+        has_clouds = has_distinct_clouds(image)
+        
+        # Override logic with better conditions
+        if prediction == "clear" and has_haze:
+            # If model says clear but we detect uniform haze, check confidence
+            if clear_prob < 0.90 and contrast < 40:  # Low contrast suggests haze
+                print("Override: Atmospheric haze detected → Changing to 'hazy'")
+                prediction = "hazy"
+                confidence_value = min(75.0, confidence_value * 0.8)
+                clear_prob, hazy_prob = hazy_prob, clear_prob
+                
+        elif prediction == "hazy" and has_clouds and not has_haze:
+            # Only override to clear if we have distinct clouds AND no uniform haze
+            if vis_score > 65 and contrast > 35:
+                print("Override: Blue sky with distinct clouds detected → Changing to 'clear'")
                 prediction = "clear"
                 confidence_value = min(confidence_value * 0.85, 88.0)
                 clear_prob, hazy_prob = hazy_prob, clear_prob
         
-        elif confidence_value < 60:
+        # Uncertainty check
+        if confidence_value < 60:
             prediction = "uncertain"
         
         print(f"Final prediction: {prediction} ({confidence_value:.2f}%)")
@@ -186,7 +235,7 @@ def home():
     return {
         "status": "CrowdVision HazeRadar API Running",
         "model": "Haze1K Trained - 100% Accuracy", 
-        "version": "2.0"
+        "version": "2.1"
     }
 
 @app.route('/health')
