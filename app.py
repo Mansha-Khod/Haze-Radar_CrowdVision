@@ -124,30 +124,35 @@ def has_distinct_clouds(image):
         hsv_image = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
         h, s, v = hsv_image[:,:,0], hsv_image[:,:,1], hsv_image[:,:,2]
         
-        # Blue sky detection - must have saturated blue
-        blue_mask = (h > 90) & (h < 130) & (s > 40) & (v > 80)  # Increased saturation threshold
+        # Blue sky detection - detect vibrant blue
+        blue_mask = (h > 90) & (h < 130) & (s > 25) & (v > 70)  # More lenient
         blue_ratio = np.sum(blue_mask) / blue_mask.size
         
         # White cloud detection - bright with low saturation
-        white_mask = (v > 200) & (s < 50)  # Stricter white cloud criteria
+        white_mask = (v > 180) & (s < 60)  # More lenient for clouds
         white_ratio = np.sum(white_mask) / white_mask.size
         
-        # Calculate saturation in "blue" regions
+        # Calculate average saturation and value
         avg_saturation = np.mean(s)
+        avg_brightness = np.mean(v)
         
         # Check for distinct boundaries (clouds have edges)
         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         edges = cv2.Canny(gray, 100, 200)
         edge_density = np.sum(edges > 0) / edges.size
         
-        # True clouds: saturated blue sky + distinct white clouds + good edge definition
-        has_vibrant_blue = blue_ratio > 0.20 and avg_saturation > 60  # Need good saturation
-        has_clear_clouds = white_ratio > 0.08 and white_ratio < 0.40  # Not too much white
-        has_definition = edge_density > 0.05  # Good edge definition
+        # Check RGB color variance to distinguish from gray haze
+        rgb_std = np.std(img_array, axis=(0,1))
+        has_color_variation = rgb_std[0] > 20 or rgb_std[2] > 20  # Blue or Red channel variance
         
-        print(f"Cloud check - Blue: {blue_ratio:.2%}, White: {white_ratio:.2%}, Sat: {avg_saturation:.1f}, Edges: {edge_density:.3f}")
+        # True clouds: blue sky + white clouds + color variation
+        has_blue_sky = blue_ratio > 0.15 and avg_saturation > 40  # More lenient
+        has_clouds = white_ratio > 0.05 and white_ratio < 0.50
+        is_bright = avg_brightness > 100
         
-        return has_vibrant_blue and has_clear_clouds and has_definition
+        print(f"Cloud check - Blue: {blue_ratio:.2%}, White: {white_ratio:.2%}, Sat: {avg_saturation:.1f}, Bright: {avg_brightness:.1f}, Edges: {edge_density:.3f}, RGB_std: {rgb_std}")
+        
+        return has_blue_sky and has_clouds and is_bright and has_color_variation
         
     except Exception as e:
         print(f"Cloud detection error: {e}")
