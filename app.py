@@ -8,23 +8,17 @@ import torch.nn as nn
 from torchvision import models, transforms
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import gdown
 
 app = Flask(__name__)
 CORS(app)
 device = torch.device("cpu")
 
-# Download model
-MODEL_PATH = "crowd_vision_model.pth"
-DRIVE_FILE_ID = "168Jui3J763s_JmoxH3w7nz5FplMH3Kin" 
+# Model path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "crowd_vision_model.pth")
 
-if os.path.exists(MODEL_PATH):
-    os.remove(MODEL_PATH)
-    print("Removed old model file")
-
-print("Downloading model from Google Drive...")
-gdown.download(id=DRIVE_FILE_ID, output=MODEL_PATH, quiet=False)
-print("Model downloaded!")
+if not os.path.exists(MODEL_PATH):
+    raise RuntimeError(f"Model file not found at {MODEL_PATH}")
 
 # Model architecture
 class CrowdVisionModel(nn.Module):
@@ -46,26 +40,21 @@ class CrowdVisionModel(nn.Module):
 
 model = CrowdVisionModel(num_classes=2).to(device)
 
+# Load model weights
 print("Loading trained weights...")
 try:
-    state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+    state_dict = torch.load(MODEL_PATH, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
     print("Model weights loaded successfully")
-    
+
     # Quick verification
     dummy_input = torch.randn(1, 3, 224, 224).to(device)
     with torch.no_grad():
         test_output = model(dummy_input)
         test_probs = torch.softmax(test_output, dim=1)
-    
     print(f"Model test - Clear: {test_probs[0][0]:.3f}, Hazy: {test_probs[0][1]:.3f}")
-    
-    if abs(test_probs[0][0].item() - 0.5) < 0.1:
-        print("Warning: Model outputs appear random")
-    else:
-        print("Model appears trained properly")
-        
+
 except Exception as e:
     print(f"Failed to load weights: {e}")
     import traceback
@@ -93,24 +82,16 @@ def calculate_visibility_score(image):
     return visibility, contrast, edge_density, brightness
 
 def detect_atmospheric_haze(image):
-    """Detect uniform atmospheric haze/smog (grayish veil over scene)"""
     try:
         img_array = np.array(image)
         hsv_image = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
         h, s, v = hsv_image[:,:,0], hsv_image[:,:,1], hsv_image[:,:,2]
         
-        # Low saturation across image indicates haze/smog
         avg_saturation = np.mean(s)
         saturation_std = np.std(s)
-        
-        # Haze creates uniform desaturation
         has_uniform_desaturation = avg_saturation < 80 and saturation_std < 35
         
-        # Calculate color variance in the image
         color_variance = np.std(img_array, axis=(0,1)).mean()
-        
-        print(f"Haze indicators - Avg Sat: {avg_saturation:.1f}, Sat Std: {saturation_std:.1f}, Color Var: {color_variance:.1f}")
-        
         return has_uniform_desaturation and color_variance < 45
         
     except Exception as e:
@@ -118,39 +99,30 @@ def detect_atmospheric_haze(image):
         return False
 
 def has_distinct_clouds(image):
-    """Detect blue sky with distinct white clouds (clear day with clouds)"""
     try:
         img_array = np.array(image)
         hsv_image = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
         h, s, v = hsv_image[:,:,0], hsv_image[:,:,1], hsv_image[:,:,2]
         
-        # Blue sky detection - detect vibrant blue
-        blue_mask = (h > 90) & (h < 130) & (s > 25) & (v > 70)  # More lenient
+        blue_mask = (h > 90) & (h < 130) & (s > 25) & (v > 70)
         blue_ratio = np.sum(blue_mask) / blue_mask.size
         
-        # White cloud detection - bright with low saturation
-        white_mask = (v > 180) & (s < 60)  # More lenient for clouds
+        white_mask = (v > 180) & (s < 60)
         white_ratio = np.sum(white_mask) / white_mask.size
         
-        # Calculate average saturation and value
         avg_saturation = np.mean(s)
         avg_brightness = np.mean(v)
         
-        # Check for distinct boundaries (clouds have edges)
         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         edges = cv2.Canny(gray, 100, 200)
         edge_density = np.sum(edges > 0) / edges.size
         
-        # Check RGB color variance to distinguish from gray haze
         rgb_std = np.std(img_array, axis=(0,1))
-        has_color_variation = rgb_std[0] > 20 or rgb_std[2] > 20  # Blue or Red channel variance
+        has_color_variation = rgb_std[0] > 20 or rgb_std[2] > 20
         
-        # True clouds: blue sky + white clouds + color variation
-        has_blue_sky = blue_ratio > 0.15 and avg_saturation > 40  # More lenient
+        has_blue_sky = blue_ratio > 0.15 and avg_saturation > 40
         has_clouds = white_ratio > 0.05 and white_ratio < 0.50
         is_bright = avg_brightness > 100
-        
-        print(f"Cloud check - Blue: {blue_ratio:.2%}, White: {white_ratio:.2%}, Sat: {avg_saturation:.1f}, Bright: {avg_brightness:.1f}, Edges: {edge_density:.3f}, RGB_std: {rgb_std}")
         
         return has_blue_sky and has_clouds and is_bright and has_color_variation
         
@@ -183,53 +155,36 @@ def predict():
         prediction = label_map[predicted.item()]
         confidence_value = float(confidence.item() * 100)
         
-        print(f"Model prediction - Clear: {clear_prob*100:.2f}%, Hazy: {hazy_prob*100:.2f}%")
-        print(f"Visibility score: {vis_score:.2f}, Contrast: {contrast:.2f}")
-        
-        # Check for atmospheric haze first
         has_haze = detect_atmospheric_haze(image)
         has_clouds = has_distinct_clouds(image)
         
-        # Override logic with better conditions
         if prediction == "clear" and has_haze:
-            # If model says clear but we detect uniform haze, check confidence
-            if clear_prob < 0.90 and contrast < 40:  # Low contrast suggests haze
-                print("Override: Atmospheric haze detected → Changing to 'hazy'")
+            if clear_prob < 0.90 and contrast < 40:
                 prediction = "hazy"
                 confidence_value = min(75.0, confidence_value * 0.8)
                 clear_prob, hazy_prob = hazy_prob, clear_prob
                 
         elif prediction == "hazy" and has_clouds:
-            # If we have distinct clouds and good visibility, override to clear
             if not has_haze and (vis_score > 60 or contrast > 30):
-                print("Override: Blue sky with distinct clouds detected → Changing to 'clear'")
                 prediction = "clear"
                 confidence_value = min(confidence_value * 0.90, 92.0)
                 clear_prob, hazy_prob = hazy_prob, clear_prob
         
-        # Special case: Very high confidence hazy but obvious blue sky
         elif prediction == "hazy" and confidence_value > 85:
             if has_clouds and brightness > 150 and not has_haze:
-                print("Override: High-confidence but clear blue sky detected → Changing to 'clear'")
                 prediction = "clear"
                 confidence_value = 85.0
                 clear_prob, hazy_prob = hazy_prob, clear_prob
         
-        # Handle uncertainty with visibility metrics
         if confidence_value < 60:
-            # Use visibility metrics to make decision
             if has_clouds or (vis_score > 70 and contrast > 30 and not has_haze):
-                print(f"Uncertain but clear indicators detected → Setting to 'clear' with confidence 65%")
                 prediction = "clear"
                 confidence_value = 65.0
             elif has_haze or (contrast < 35 and vis_score < 50):
-                print(f"Uncertain but haze indicators detected → Setting to 'hazy' with confidence 65%")
                 prediction = "hazy"
                 confidence_value = 65.0
             else:
                 prediction = "uncertain"
-        
-        print(f"Final prediction: {prediction} ({confidence_value:.2f}%)")
         
         return jsonify({
             "success": True,
