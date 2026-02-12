@@ -8,4 +8,4 @@ cmds = [
 ]
 
 [start]
-cmd = "gunicorn app:app --timeout 200 --workers 1 --threads 2 --preload"
+cmd = "sh -c 'gunicorn app:app --timeout 200 --workers 1 --threads 2 --preload --bind 0.0.0.0:${PORT:-5000}'"
